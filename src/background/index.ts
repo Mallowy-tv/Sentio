@@ -1,10 +1,12 @@
 import {
   buildChannel,
+  isDefaultProfileImageURL,
   parseCompactNumber,
   scoreBand,
   type Channel,
   type ChannelRemark,
   type ChannelSnapshot,
+  type ScoreContribution,
   type ScoreTag,
   type TimelinePoint,
   type Viewer,
@@ -12,7 +14,7 @@ import {
 import { DASHBOARD_PAGE, DASHBOARD_STORAGE_KEY, type DashboardChannel, type DashboardContext } from "../shared/extension";
 import { getUserInfoGraphQL, getViewerCount, getViewerListParallel } from "./twitchApi";
 
-type SessionViewer = Omit<Viewer, "present" | "displayName">;
+type SessionViewer = Omit<Viewer, "present" | "displayName" | "scoreBreakdown">;
 
 type ChannelSession = {
   channel: Channel;
@@ -430,14 +432,23 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
 
   const analyzed = viewers.map((viewer) => {
     const tags: ScoreTag[] = [];
+    const scoreBreakdown: ScoreContribution[] = [];
     let score = 0;
+    const addScore = (id: string, label: string, points: number, detail: string) => {
+      if (points <= 0) {
+        return;
+      }
+
+      score += points;
+      scoreBreakdown.push({ id, label, points, detail });
+    };
 
     viewer.accountsOnSameDay = viewer.createdAt ? dayCounts.get(dayKeyFromDate(viewer.createdAt)) || 0 : 0;
     viewer.watchTimeMinutes = Math.max(0, Math.round((viewer.lastSeen - viewer.firstSeen) / 60000));
 
     if (viewer.userInfoStatus === "resolved" && !viewer.createdAt) {
       tags.push("missing_created_at");
-      score += 8;
+      addScore("missing_created_at", "No creation date", 3, "The profile resolved, but Twitch did not expose an account creation date.");
     } else if (viewer.createdAt) {
       const createdAt = new Date(viewer.createdAt);
       const ageDays = Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / 86400000));
@@ -445,32 +456,69 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
 
       if (ageDays < 30) {
         tags.push("new_account");
-        score += 35;
+        addScore("new_account_30d", "Very new account", 26, `Account age is ${ageDays} days, which is unusually fresh for a sampled viewer.`);
       } else if (ageDays < 90) {
         tags.push("new_account");
-        score += 18;
+        addScore("new_account_90d", "New account", 14, `Account age is ${ageDays} days, so it still falls in a newer-account risk band.`);
       }
 
       if (monthInfo) {
         tags.push("clustered_creation");
         const monthRatio = monthInfo.bots / Math.max(monthInfo.nonBots + monthInfo.bots, 1);
-        score += monthRatio >= 0.5 ? 40 : monthRatio >= 0.25 ? 28 : 18;
+        const monthPoints = monthRatio >= 0.5 ? 24 : monthRatio >= 0.25 ? 16 : 10;
+        addScore(
+          "clustered_creation",
+          "Creation cluster",
+          monthPoints,
+          `${monthInfo.bots} sampled accounts from ${monthKeyFromDate(viewer.createdAt)} sit in a high-density creation bucket.`,
+        );
       }
 
       if (viewer.accountsOnSameDay >= 5) {
         tags.push("same_day_cluster");
-        score += Math.min(24, (viewer.accountsOnSameDay - 4) * 3);
+        const dayClusterPoints = Math.min(12, (viewer.accountsOnSameDay - 4) * 2);
+        addScore(
+          "same_day_cluster",
+          "Same-day cluster",
+          dayClusterPoints,
+          `${viewer.accountsOnSameDay} sampled accounts share this exact account creation day.`,
+        );
       }
     }
 
     if (viewer.userInfoStatus === "resolved" && !viewer.description) {
       tags.push("no_description");
-      score += 10;
+      addScore("no_description", "No bio", 4, "The account has no profile description, which is a weak but useful signal when stacked.");
+    }
+
+    if (viewer.userInfoStatus === "resolved" && isDefaultProfileImageURL(viewer.profileImageURL)) {
+      tags.push("default_avatar");
+      addScore("default_avatar", "Default avatar", 4, "The profile image still matches Twitch's default avatar set, which is a small unfinished-profile signal.");
     }
 
     if (viewer.watchTimeMinutes < 5) {
       tags.push("short_watch");
-      score += 5;
+      addScore("short_watch", "Short watch", 4, `Sentio has only seen this account for ${viewer.watchTimeMinutes} minute${viewer.watchTimeMinutes === 1 ? "" : "s"} so far.`);
+    }
+
+    if (tags.includes("new_account") && tags.includes("no_description")) {
+      addScore("combo_new_no_bio", "New account + no bio", 6, "A fresh account without a bio is more notable than either signal alone.");
+    }
+
+    if (tags.includes("new_account") && tags.includes("short_watch")) {
+      addScore("combo_new_short_watch", "New account + short watch", 6, "New accounts that barely stay visible deserve a closer look.");
+    }
+
+    if (tags.includes("new_account") && tags.includes("same_day_cluster")) {
+      addScore("combo_new_day_cluster", "New account + day cluster", 8, "A new account that lands inside a same-day creation cluster is more concerning in context.");
+    }
+
+    if (tags.includes("clustered_creation") && tags.includes("same_day_cluster")) {
+      addScore("combo_cluster_stack", "Creation cluster stack", 10, "Both the monthly creation bucket and the exact day cluster lean in the same direction.");
+    }
+
+    if (tags.includes("clustered_creation") && tags.includes("short_watch")) {
+      addScore("combo_cluster_short_watch", "Cluster + short watch", 6, "A clustered account with very short watch-time stacks multiple weak signals.");
     }
 
     return {
@@ -478,6 +526,7 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
       displayName: viewer.username,
       score: Math.max(0, Math.min(100, score)),
       tags,
+      scoreBreakdown,
       present: Date.now() - viewer.lastSeen < 120_000,
     } satisfies Viewer;
   });

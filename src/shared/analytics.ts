@@ -12,8 +12,16 @@ export type ScoreTag =
   | "clustered_creation"
   | "same_day_cluster"
   | "no_description"
+  | "default_avatar"
   | "missing_created_at"
   | "short_watch";
+
+export type ScoreContribution = {
+  id: string;
+  label: string;
+  points: number;
+  detail: string;
+};
 
 export type Viewer = {
   id: string;
@@ -29,6 +37,7 @@ export type Viewer = {
   accountsOnSameDay: number;
   score: number;
   tags: ScoreTag[];
+  scoreBreakdown: ScoreContribution[];
   present: boolean;
 };
 
@@ -69,9 +78,20 @@ export const TAG_LABELS: Record<ScoreTag, { label: string; kind: "risk" | "trust
   clustered_creation: { label: "Creation cluster", kind: "risk" },
   same_day_cluster: { label: "Same-day cluster", kind: "risk" },
   no_description: { label: "No bio", kind: "risk" },
+  default_avatar: { label: "Default avatar", kind: "risk" },
   missing_created_at: { label: "No creation date", kind: "risk" },
   short_watch: { label: "Short watch", kind: "risk" },
 };
+
+const DEFAULT_PROFILE_IMAGE_PREFIX = "https://static-cdn.jtvnw.net/user-default-pictures-uv/";
+
+export function isDefaultProfileImageURL(profileImageURL: string | null | undefined): boolean {
+  if (!profileImageURL) {
+    return false;
+  }
+
+  return profileImageURL.toLowerCase().startsWith(DEFAULT_PROFILE_IMAGE_PREFIX);
+}
 
 function hashString(value: string): number {
   return value.split("").reduce((sum, char, index) => sum + char.charCodeAt(0) * (index + 1), 0);
@@ -144,8 +164,8 @@ export function formatTimelineSpan(minutes: number): string {
 }
 
 export function scoreBand(score: number): "safe" | "watch" | "suspicious" {
-  if (score >= 50) return "suspicious";
-  if (score >= 35) return "watch";
+  if (score >= 44) return "suspicious";
+  if (score >= 18) return "watch";
   return "safe";
 }
 
@@ -185,7 +205,7 @@ export function bucketCreationByMonth(viewers: Viewer[], months = 72) {
     const position = positions.get(key);
     if (position === undefined) return;
     buckets[position].total += 1;
-    if (viewer.score >= 60) buckets[position].suspicious += 1;
+    if (scoreBand(viewer.score) === "suspicious") buckets[position].suspicious += 1;
     else buckets[position].safe += 1;
   });
 
@@ -202,7 +222,7 @@ export function bucketWatchTime(viewers: Viewer[]) {
 
     viewers.forEach((viewer) => {
       if (viewer.watchTimeMinutes < min || viewer.watchTimeMinutes >= max) return;
-      if (viewer.score >= 60) bucket.bots += 1;
+      if (scoreBand(viewer.score) === "suspicious") bucket.bots += 1;
       else bucket.humans += 1;
     });
 
@@ -211,8 +231,8 @@ export function bucketWatchTime(viewers: Viewer[]) {
 }
 
 export function watchTimeStats(viewers: Viewer[]) {
-  const humans = viewers.filter((viewer) => viewer.score < 60);
-  const bots = viewers.filter((viewer) => viewer.score >= 60);
+  const humans = viewers.filter((viewer) => scoreBand(viewer.score) !== "suspicious");
+  const bots = viewers.filter((viewer) => scoreBand(viewer.score) === "suspicious");
   const average = (items: Viewer[]) => (items.length ? Math.round(items.reduce((sum, viewer) => sum + viewer.watchTimeMinutes, 0) / items.length) : 0);
   const median = (items: Viewer[]) => {
     if (!items.length) return 0;

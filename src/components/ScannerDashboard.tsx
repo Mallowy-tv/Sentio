@@ -18,6 +18,7 @@ import {
   Eye,
   Filter,
   Info,
+  MoreHorizontal,
   Search,
   ShieldCheck,
   Users,
@@ -47,6 +48,13 @@ import {
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 type Filter = "all" | "suspicious" | "watch" | "safe";
+
+const BAND_COPY: Record<Filter, string> = {
+  all: "All",
+  suspicious: "High signal",
+  watch: "Needs review",
+  safe: "Low signal",
+};
 
 const COLORS = {
   safe: "var(--color-success)",
@@ -130,13 +138,28 @@ function TagPill({ tag }: { tag: keyof typeof TAG_LABELS }) {
   return <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${cls}`}>{meta.label}</span>;
 }
 
-function StatusPill({ label, tone }: { label: string; tone: "risk" | "trust" }) {
+function StatusPill({ label, tone }: { label: string; tone: "risk" | "trust" | "neutral" }) {
   const cls =
     tone === "risk"
       ? "border-[color:var(--color-danger)]/30 bg-[color:var(--color-danger)]/10 text-[color:var(--color-danger)]"
-      : "border-[color:var(--color-success)]/30 bg-[color:var(--color-success)]/10 text-[color:var(--color-success)]";
+      : tone === "trust"
+        ? "border-[color:var(--color-success)]/30 bg-[color:var(--color-success)]/10 text-[color:var(--color-success)]"
+        : "border-border bg-background/40 text-muted-foreground";
 
   return <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${cls}`}>{label}</span>;
+}
+
+function getBandSummary(viewer: Viewer): string {
+  const band = scoreBand(viewer.score);
+  if (band === "suspicious") {
+    return "High signal means several weak surface-level signals are stacking together. It is useful for review, not proof.";
+  }
+
+  if (band === "watch") {
+    return "Needs review means Sentio sees enough weak signals to keep an eye on this account, but not enough to overstate certainty.";
+  }
+
+  return "Low signal means Sentio has not seen enough unusual surface-level evidence yet. It does not confirm legitimacy.";
 }
 
 function ChannelAvatar({ channel, size }: { channel: Channel; size: string }) {
@@ -210,6 +233,7 @@ export function ScannerDashboard({
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Viewer | null>(null);
   const [showGuide, setShowGuide] = useState(false);
+  const [breakdownViewer, setBreakdownViewer] = useState<Viewer | null>(null);
 
   useEffect(() => {
     setSelectedChannelName((current) =>
@@ -262,9 +286,9 @@ export function ScannerDashboard({
   }, [viewers]);
 
   const distributionData = [
-    { name: "Safe", value: totals.safe, color: COLORS.safe },
-    { name: "Watch", value: totals.watch, color: COLORS.watch },
-    { name: "Suspicious", value: totals.suspicious, color: COLORS.suspicious },
+    { name: BAND_COPY.safe, value: totals.safe, color: COLORS.safe },
+    { name: BAND_COPY.watch, value: totals.watch, color: COLORS.watch },
+    { name: BAND_COPY.suspicious, value: totals.suspicious, color: COLORS.suspicious },
   ];
 
   return (
@@ -339,9 +363,9 @@ export function ScannerDashboard({
           <section className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
             <StatCard label="Live viewers" value={totals.live.toLocaleString()} icon={Eye} delta={`${totals.authenticated.toLocaleString()} authenticated`} />
             <StatCard label="Sampled" value={totals.sample} icon={Users} delta="community tab total sampling" />
-            <StatCard label="Suspicious" value={totals.suspicious} icon={AlertTriangle} tone="danger" delta={totals.sample ? `${((totals.suspicious / totals.sample) * 100).toFixed(1)}% of sample` : "0% of sample"} />
-            <StatCard label="Watch" value={totals.watch} icon={Activity} tone="warning" />
-            <StatCard label="Safe" value={totals.safe} icon={ShieldCheck} tone="success" />
+            <StatCard label="High signal" value={totals.suspicious} icon={AlertTriangle} tone="danger" delta={totals.sample ? `${((totals.suspicious / totals.sample) * 100).toFixed(1)}% of sample` : "0% of sample"} />
+            <StatCard label="Needs review" value={totals.watch} icon={Activity} tone="warning" delta="stacked weak signals" />
+            <StatCard label="Low signal" value={totals.safe} icon={ShieldCheck} tone="success" delta="not proof of legitimacy" />
             <StatCard label="New <30d" value={totals.newAcc} icon={Bot} tone="warning" delta={`${totals.pending} pending`} />
           </section>
 
@@ -381,7 +405,7 @@ export function ScannerDashboard({
                     <span className="h-2 w-2 rounded-full" style={{ background: COLORS.accent }} /> Viewers
                   </span>
                   <span className="flex items-center gap-1.5 text-muted-foreground">
-                    <span className="h-2 w-2 rounded-full" style={{ background: COLORS.suspicious }} /> Suspicious
+                    <span className="h-2 w-2 rounded-full" style={{ background: COLORS.suspicious }} /> High signal
                   </span>
                 </div>
               </div>
@@ -456,14 +480,14 @@ export function ScannerDashboard({
               <div className="mb-3 flex items-start justify-between gap-4">
                 <div>
                   <h2 className="text-sm font-semibold">Account creation timeline</h2>
-                  <p className="text-xs text-muted-foreground">Monthly creation dates of sampled viewers · suspicious accounts in red</p>
+                  <p className="text-xs text-muted-foreground">Monthly creation dates of sampled viewers · higher-signal accounts in red</p>
                 </div>
                 <div className="flex gap-3 text-xs">
                   <span className="flex items-center gap-1.5 text-muted-foreground">
-                    <span className="h-2 w-2 rounded-sm" style={{ background: COLORS.accent }} /> Non-bot
+                    <span className="h-2 w-2 rounded-sm" style={{ background: COLORS.accent }} /> Lower signal
                   </span>
                   <span className="flex items-center gap-1.5 text-muted-foreground">
-                    <span className="h-2 w-2 rounded-sm" style={{ background: COLORS.suspicious }} /> Bot
+                    <span className="h-2 w-2 rounded-sm" style={{ background: COLORS.suspicious }} /> High signal
                   </span>
                 </div>
               </div>
@@ -474,14 +498,14 @@ export function ScannerDashboard({
                     <XAxis dataKey="label" stroke="var(--color-muted-foreground)" tick={{ fontSize: 10, fontFamily: "var(--font-mono)" }} interval={11} />
                     <YAxis stroke="var(--color-muted-foreground)" tick={{ fontSize: 10, fontFamily: "var(--font-mono)" }} allowDecimals={false} />
                     <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--color-muted)", opacity: 0.25 }} />
-                    <Bar name="Non-bot" dataKey="safe" stackId="a" fill={COLORS.accent} fillOpacity={0.85} />
-                    <Bar name="Bot" dataKey="suspicious" stackId="a" fill={COLORS.suspicious} radius={[2, 2, 0, 0]} />
+                    <Bar name="Lower signal" dataKey="safe" stackId="a" fill={COLORS.accent} fillOpacity={0.85} />
+                    <Bar name="High signal" dataKey="suspicious" stackId="a" fill={COLORS.suspicious} radius={[2, 2, 0, 0]} />
                   </BarChart>
                 )}
               </ChartFrame>
               <div className="mt-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
                 <span>{monthBuckets[0].label}</span>
-                <span className="font-mono">{viewers.length} accounts · {viewers.filter((viewer) => viewer.score >= 60).length} flagged</span>
+                <span className="font-mono">{viewers.length} accounts · {viewers.filter((viewer) => scoreBand(viewer.score) === "suspicious").length} high signal</span>
                 <span>{monthBuckets[monthBuckets.length - 1].label}</span>
               </div>
             </div>
@@ -549,14 +573,14 @@ export function ScannerDashboard({
               <div className="mb-3 flex items-start justify-between gap-4">
                 <div>
                   <h2 className="text-sm font-semibold">Time spent in stream</h2>
-                  <p className="text-xs text-muted-foreground">How long sampled viewers have been watching · humans vs flagged accounts</p>
+                  <p className="text-xs text-muted-foreground">How long sampled viewers have been watching · lower-signal vs high-signal accounts</p>
                 </div>
                 <div className="flex gap-3 text-xs">
                   <span className="flex items-center gap-1.5 text-muted-foreground">
-                    <span className="h-2 w-2 rounded-sm" style={{ background: COLORS.accent }} /> Humans
+                    <span className="h-2 w-2 rounded-sm" style={{ background: COLORS.accent }} /> Lower signal
                   </span>
                   <span className="flex items-center gap-1.5 text-muted-foreground">
-                    <span className="h-2 w-2 rounded-sm" style={{ background: COLORS.suspicious }} /> Suspicious
+                    <span className="h-2 w-2 rounded-sm" style={{ background: COLORS.suspicious }} /> High signal
                   </span>
                 </div>
               </div>
@@ -567,8 +591,8 @@ export function ScannerDashboard({
                     <XAxis dataKey="label" stroke="var(--color-muted-foreground)" tick={{ fontSize: 10, fontFamily: "var(--font-mono)" }} />
                     <YAxis stroke="var(--color-muted-foreground)" tick={{ fontSize: 10, fontFamily: "var(--font-mono)" }} allowDecimals={false} />
                     <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--color-muted)", opacity: 0.25 }} />
-                    <Bar name="Humans" dataKey="humans" stackId="w" fill={COLORS.accent} fillOpacity={0.85} />
-                    <Bar name="Suspicious" dataKey="bots" stackId="w" fill={COLORS.suspicious} radius={[2, 2, 0, 0]} />
+                    <Bar name="Lower signal" dataKey="humans" stackId="w" fill={COLORS.accent} fillOpacity={0.85} />
+                    <Bar name="High signal" dataKey="bots" stackId="w" fill={COLORS.suspicious} radius={[2, 2, 0, 0]} />
                   </BarChart>
                 )}
               </ChartFrame>
@@ -580,14 +604,14 @@ export function ScannerDashboard({
                 <div className="mt-3 grid grid-cols-2 gap-3">
                   <div className="rounded border border-border bg-background/40 p-3">
                     <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: COLORS.accent }} /> Humans
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: COLORS.accent }} /> Lower signal
                     </div>
                     <div className="mt-1 font-mono text-2xl tabular-nums">{watchStats.humanAvg}<span className="text-sm text-muted-foreground">m</span></div>
                     <div className="text-[10px] text-muted-foreground">avg · median {watchStats.humanMedian}m</div>
                   </div>
                   <div className="rounded border border-border bg-background/40 p-3">
                     <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: COLORS.suspicious }} /> Suspicious
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: COLORS.suspicious }} /> High signal
                     </div>
                     <div className="mt-1 font-mono text-2xl tabular-nums text-[color:var(--color-danger)]">{watchStats.botAvg}<span className="text-sm text-muted-foreground">m</span></div>
                     <div className="text-[10px] text-muted-foreground">avg · median {watchStats.botMedian}m</div>
@@ -600,7 +624,7 @@ export function ScannerDashboard({
                 <p className="mt-1 text-[11px] text-muted-foreground">Accounts present but barely watching — common bot pattern.</p>
                 {(() => {
                   const idleTotal = viewers.filter((viewer) => viewer.watchTimeMinutes < 5).length;
-                  const idleBots = viewers.filter((viewer) => viewer.watchTimeMinutes < 5 && viewer.score >= 60).length;
+                  const idleBots = viewers.filter((viewer) => viewer.watchTimeMinutes < 5 && scoreBand(viewer.score) === "suspicious").length;
                   const pct = idleTotal ? (idleBots / idleTotal) * 100 : 0;
                   return (
                     <>
@@ -646,7 +670,7 @@ export function ScannerDashboard({
                       onClick={() => setFilter(item)}
                       className={`rounded px-2 py-1 capitalize transition ${filter === item ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
                     >
-                      {item}
+                      {BAND_COPY[item]}
                     </button>
                   ))}
                 </div>
@@ -663,6 +687,7 @@ export function ScannerDashboard({
                     <th className="px-4 py-2 text-right font-medium">Time</th>
                     <th className="px-4 py-2 text-right font-medium">Same day</th>
                     <th className="px-4 py-2 font-medium">Labels</th>
+                    <th className="px-4 py-2 text-right font-medium">More</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -709,18 +734,36 @@ export function ScannerDashboard({
                         <td className="px-4 py-2 text-right font-mono text-xs tabular-nums">{viewer.accountsOnSameDay || ""}</td>
                         <td className="px-4 py-2">
                           <div className="flex max-w-[340px] flex-wrap gap-1">
-                            <StatusPill label={viewer.description ? "Has bio" : "No bio"} tone={viewer.description ? "trust" : "risk"} />
+                            <StatusPill
+                              label={viewer.userInfoStatus === "resolved" ? (viewer.description ? "Has bio" : "No bio") : "Bio unknown"}
+                              tone={viewer.userInfoStatus === "resolved" ? (viewer.description ? "trust" : "risk") : "neutral"}
+                            />
+                            {viewer.tags.includes("default_avatar") ? <StatusPill label="Default avatar" tone="risk" /> : null}
                             <StatusPill label={viewer.watchTimeMinutes >= 5 ? "Watching" : "Short watch"} tone={viewer.watchTimeMinutes >= 5 ? "trust" : "risk"} />
                             {viewer.tags.includes("new_account") ? <StatusPill label="New account" tone="risk" /> : null}
                             {viewer.accountsOnSameDay >= 5 ? <StatusPill label="Day cluster" tone="risk" /> : null}
                             {viewer.tags.includes("missing_created_at") ? <StatusPill label="No creation date" tone="risk" /> : null}
                             {viewer.tags
-                              .filter((tag) => tag !== "no_description" && tag !== "missing_created_at" && tag !== "short_watch" && tag !== "same_day_cluster" && tag !== "new_account")
+                              .filter((tag) => tag !== "no_description" && tag !== "default_avatar" && tag !== "missing_created_at" && tag !== "short_watch" && tag !== "same_day_cluster" && tag !== "new_account")
                               .slice(0, 2)
                               .map((tag) => (
                                 <TagPill key={tag} tag={tag} />
                               ))}
                           </div>
+                        </td>
+                        <td className="px-4 py-2 text-right">
+                          <button
+                            type="button"
+                            aria-label={`Open score breakdown for ${viewer.username}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setBreakdownViewer(viewer);
+                              setSelected(viewer);
+                            }}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background/40 text-muted-foreground transition-colors hover:border-accent/50 hover:bg-secondary/80 hover:text-foreground"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </button>
                         </td>
                       </tr>
                     );
@@ -769,19 +812,19 @@ export function ScannerDashboard({
                 <div className="rounded-lg border border-border bg-background/40 p-4">
                   <h3 className="text-sm font-semibold">Why the numbers can look far apart</h3>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    <span className="text-foreground">Live viewers</span> is Twitch&apos;s current stream count. <span className="text-foreground">Authenticated</span> is the signed-in community-tab count Twitch exposes. <span className="text-foreground">Sampled</span>, <span className="text-foreground">Safe</span>, <span className="text-foreground">Watch</span>, and <span className="text-foreground">Suspicious</span> are based on the running sampled session set, so they can be much higher than live when many unique accounts have been seen across repeated samples.
+                    <span className="text-foreground">Live viewers</span> is Twitch&apos;s current stream count. <span className="text-foreground">Authenticated</span> is the signed-in community-tab count Twitch exposes. <span className="text-foreground">Sampled</span>, <span className="text-foreground">Low signal</span>, <span className="text-foreground">Needs review</span>, and <span className="text-foreground">High signal</span> are based on the running sampled session set, so they can be much higher than live when many unique accounts have been seen across repeated samples.
                   </p>
                 </div>
                 <div className="rounded-lg border border-border bg-background/40 p-4">
                   <h3 className="text-sm font-semibold">Scoring</h3>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Scores are based on account age, creation-date clustering, same-day account density, missing bio, and short watch duration. Higher scores mean more suspicious signals, not certainty.
+                    Scores are based on account age, creation-date clustering, same-day account density, missing bio, default avatar, short watch duration, and how those weak signals stack together. Higher scores mean more review signals, not certainty.
                   </p>
                 </div>
                 <div className="rounded-lg border border-border bg-background/40 p-4">
                   <h3 className="text-sm font-semibold">Labels</h3>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Labels summarize the strongest signals we currently have, such as <span className="text-foreground">New account</span>, <span className="text-foreground">Day cluster</span>, <span className="text-foreground">No bio</span>, and <span className="text-foreground">Short watch</span>.
+                    Labels summarize the strongest signals we currently have, such as <span className="text-foreground">New account</span>, <span className="text-foreground">Day cluster</span>, <span className="text-foreground">No bio</span>, <span className="text-foreground">Default avatar</span>, and <span className="text-foreground">Short watch</span>.
                   </p>
                 </div>
                 <div className="rounded-lg border border-border bg-background/40 p-4">
@@ -794,6 +837,70 @@ export function ScannerDashboard({
 
               <div className="mt-4 rounded-lg border border-[color:var(--color-warning)]/30 bg-[color:var(--color-warning)]/10 p-4 text-sm text-muted-foreground">
                 <span className="font-semibold text-foreground">Important:</span> this tool is directional. Refresh issues, signed-out viewers, Twitch sampling limits, and missing profile data can all affect the result.
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {breakdownViewer ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-6 backdrop-blur-sm" onClick={() => setBreakdownViewer(null)}>
+            <div className="w-full max-w-2xl rounded-xl border border-border bg-card p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-semibold">{breakdownViewer.username}</h2>
+                    <StatusPill label={BAND_COPY[scoreBand(breakdownViewer.score)]} tone={scoreBand(breakdownViewer.score) === "suspicious" ? "risk" : scoreBand(breakdownViewer.score) === "watch" ? "neutral" : "trust"} />
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Score {breakdownViewer.score} · {getBandSummary(breakdownViewer)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBreakdownViewer(null)}
+                  className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-4">
+                {[
+                  ["Created", breakdownViewer.createdAt ? formatDistanceToNowStrict(new Date(breakdownViewer.createdAt), { addSuffix: false }) : breakdownViewer.userInfoStatus === "pending" ? "Pending" : "Unknown"],
+                  ["Watch time", `${breakdownViewer.watchTimeMinutes}m`],
+                  ["Same day", breakdownViewer.accountsOnSameDay ? breakdownViewer.accountsOnSameDay.toString() : "—"],
+                  ["Profile data", breakdownViewer.userInfoStatus === "resolved" ? "Resolved" : breakdownViewer.userInfoStatus === "pending" ? "Pending" : "Unavailable"],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-lg border border-border bg-background/40 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
+                    <div className="mt-1 font-mono text-sm text-foreground">{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-5 rounded-lg border border-border bg-background/40 p-4">
+                <div className="text-sm font-semibold">Score breakdown</div>
+                <p className="mt-1 text-xs text-muted-foreground">These are weak surface-level signals that stack together. They are meant to guide review, not prove intent.</p>
+                {breakdownViewer.scoreBreakdown.length ? (
+                  <div className="mt-4 space-y-2">
+                    {breakdownViewer.scoreBreakdown.map((item) => (
+                      <div key={item.id} className="rounded-md border border-border/70 bg-card/60 px-3 py-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm font-medium text-foreground">{item.label}</div>
+                          <div className="font-mono text-sm text-[color:var(--color-warning)]">+{item.points}</div>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-md border border-border/70 bg-card/60 px-3 py-2 text-sm text-muted-foreground">
+                    No strong surface-level signals have stacked up yet. Low signal does not confirm legitimacy.
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-[color:var(--color-warning)]/30 bg-[color:var(--color-warning)]/10 p-4 text-sm text-muted-foreground">
+                <span className="font-semibold text-foreground">Important:</span> this score uses surface-level account signals and sampled context. It is helpful for investigation, not proof.
               </div>
             </div>
           </div>
