@@ -13,33 +13,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Set up Node.js environment
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
+      - name: Install project dependencies
         run: npm ci
 
       - name: Run tests if available
         run: npm test --if-present
 
-      - name: Build
+      - name: Build project
         run: npm run build
 
-      - name: Zip dist
+      - name: Generate artifact filename (Sentio branding)
+        run: |
+          BRANCH_NAME=${GITHUB_REF##*/}
+          SHORT_COMMIT_SHA=$(echo $GITHUB_SHA | cut -c1-7)
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          ARTIFACT_NAME="Sentio-v${PACKAGE_VERSION}-${BRANCH_NAME}-${SHORT_COMMIT_SHA}.zip"
+
+          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+
+      - name: Create zip archive from dist folder
         run: |
           if [ ! -d "dist" ]; then
             echo "dist folder missing"
             exit 1
           fi
-          zip -r dist.zip dist
 
-      - name: Delete previous "latest" release (if exists)
+          zip -r "$ARTIFACT_NAME" dist
+
+      - name: Delete previous latest release if it exists
         uses: dev-drprasad/delete-tag-and-release@v1.1
         with:
           tag_name: latest
@@ -47,12 +58,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
-      - name: Create "latest" release
+      - name: Create or update latest GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Latest Build
-          body: Auto-generated build from latest commit
-          files: dist.zip
+          name: Sentio Latest Build
+          body: |
+            Auto-generated Sentio build
+
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+          files: ${{ env.ARTIFACT_NAME }}
           draft: false
           prerelease: false
