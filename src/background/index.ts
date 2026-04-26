@@ -3,6 +3,7 @@ import {
   parseCompactNumber,
   scoreBand,
   type Channel,
+  type ChannelRemark,
   type ChannelSnapshot,
   type ScoreTag,
   type TimelinePoint,
@@ -462,7 +463,7 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
 
     if (viewer.watchTimeMinutes < 5) {
       tags.push("short_watch");
-      score += 10;
+      score += 5;
     }
 
     return {
@@ -484,6 +485,33 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
     newAccountCount: analyzed.filter((viewer) => viewer.tags.includes("new_account")).length,
     pendingCount: analyzed.filter((viewer) => !viewer.createdAt).length,
   };
+}
+
+function buildChannelRemarks(viewers: Viewer[], liveViewerCount: number): ChannelRemark[] {
+  const presentViewers = viewers.filter((viewer) => viewer.present);
+  const shortWatchPresent = presentViewers.filter((viewer) => viewer.watchTimeMinutes < 5).length;
+  const suspiciousPresent = presentViewers.filter((viewer) => scoreBand(viewer.score) === "suspicious").length;
+
+  if (liveViewerCount < 75 || presentViewers.length < 40) {
+    return [];
+  }
+
+  const shortWatchRatio = shortWatchPresent / Math.max(presentViewers.length, 1);
+  const suspiciousRatio = suspiciousPresent / Math.max(presentViewers.length, 1);
+
+  if (shortWatchRatio >= 0.65 && suspiciousRatio <= 0.3) {
+    return [
+      {
+        id: "lurker-heavy",
+        title: "Lurker-heavy audience",
+        description:
+          "Many recently seen viewers still have short watch-time. On slower chats this can simply mean a quiet, lurker-heavy audience rather than a strong bot signal.",
+        tone: "note",
+      },
+    ];
+  }
+
+  return [];
 }
 
 function upsertTimeline(session: ChannelSession, liveViewerCount: number, suspiciousCount: number, authenticatedCount: number) {
@@ -597,6 +625,7 @@ function applyLiveViewerCountOverride(session: ChannelSession, viewerCountText?:
     timeline: [],
     timelineSpanMinutes: 0,
     timelineResolutionMinutes: 1,
+    remarks: buildChannelRemarks(session.latestSnapshot.viewers, liveViewerCount),
   };
 
   const timeline = mapTimeline(session.history);
@@ -678,7 +707,7 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
     const analyzed = analyzeViewers(session.viewers);
     upsertTimeline(session, liveViewerCount, analyzed.suspiciousCount, viewerSample.totalAuthenticatedCount);
 
-  const snapshot: ChannelSnapshot = {
+    const snapshot: ChannelSnapshot = {
       channel: session.channel,
       liveViewerCount,
       authenticatedCount: viewerSample.totalAuthenticatedCount,
@@ -693,6 +722,7 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
       timeline: [],
       timelineSpanMinutes: 0,
       timelineResolutionMinutes: 1,
+      remarks: buildChannelRemarks(analyzed.viewers, liveViewerCount),
     };
 
     const timeline = mapTimeline(session.history);

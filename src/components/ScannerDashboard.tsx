@@ -17,6 +17,7 @@ import {
   CircleHelp,
   Eye,
   Filter,
+  Info,
   Search,
   ShieldCheck,
   Users,
@@ -231,6 +232,7 @@ export function ScannerDashboard({
   const watchBuckets = useMemo(() => bucketWatchTime(viewers), [viewers]);
   const watchStats = useMemo(() => watchTimeStats(viewers), [viewers]);
   const tagStats = useMemo(() => tagBreakdown(viewers), [viewers]);
+  const remarks = useMemo(() => activeAnalytics?.remarks ?? [], [activeAnalytics]);
 
   const totals = useMemo(() => {
     return {
@@ -342,6 +344,30 @@ export function ScannerDashboard({
             <StatCard label="Safe" value={totals.safe} icon={ShieldCheck} tone="success" />
             <StatCard label="New <30d" value={totals.newAcc} icon={Bot} tone="warning" delta={`${totals.pending} pending`} />
           </section>
+
+          {remarks.length ? (
+            <section className="rounded-lg border border-border bg-card/60 p-4 backdrop-blur">
+              <div className="mb-3 flex items-center gap-2">
+                <Info className="h-4 w-4 text-accent" />
+                <h2 className="text-sm font-semibold">Channel remarks</h2>
+              </div>
+              <div className="space-y-2">
+                {remarks.map((remark) => (
+                  <div
+                    key={remark.id}
+                    className={`rounded-lg border px-3 py-2 ${
+                      remark.tone === "warning"
+                        ? "border-[color:var(--color-warning)]/30 bg-[color:var(--color-warning)]/10"
+                        : "border-accent/20 bg-accent/5"
+                    }`}
+                  >
+                    <div className="text-sm font-medium text-foreground">{remark.title}</div>
+                    <p className="mt-1 text-xs text-muted-foreground">{remark.description}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           <section className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             <div className="lg:col-span-2 rounded-lg border border-border bg-card/60 p-4 backdrop-blur">

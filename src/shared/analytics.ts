@@ -38,6 +38,13 @@ export type TimelinePoint = {
   authenticated: number;
 };
 
+export type ChannelRemark = {
+  id: string;
+  title: string;
+  description: string;
+  tone: "note" | "warning";
+};
+
 export type ChannelSnapshot = {
   channel: Channel;
   liveViewerCount: number;
@@ -53,6 +60,7 @@ export type ChannelSnapshot = {
   timeline: TimelinePoint[];
   timelineSpanMinutes: number;
   timelineResolutionMinutes: number;
+  remarks: ChannelRemark[];
 };
 
 export const TAG_LABELS: Record<ScoreTag, { label: string; kind: "risk" | "trust" }> = {
