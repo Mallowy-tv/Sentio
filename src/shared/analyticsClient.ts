@@ -8,8 +8,18 @@ type AnalyticsResponse = {
   error?: string;
 };
 
+function getRuntime(): typeof chrome.runtime | null {
+  const runtime = globalThis.chrome?.runtime;
+  return runtime?.id ? runtime : null;
+}
+
 export async function requestChannelAnalytics(context: DashboardContext): Promise<{ snapshot: ChannelSnapshot | null; recentChannels: Channel[] }> {
-  const response = (await chrome.runtime.sendMessage({
+  const runtime = getRuntime();
+  if (!runtime) {
+    throw new Error("Sentio runtime unavailable");
+  }
+
+  const response = (await runtime.sendMessage({
     type: "GET_CHANNEL_ANALYTICS",
     payload: context,
   })) as AnalyticsResponse;
@@ -25,7 +35,12 @@ export async function requestChannelAnalytics(context: DashboardContext): Promis
 }
 
 export async function warmChannelAnalytics(context: DashboardContext): Promise<void> {
-  await chrome.runtime.sendMessage({
+  const runtime = getRuntime();
+  if (!runtime) {
+    return;
+  }
+
+  await runtime.sendMessage({
     type: "GET_CHANNEL_ANALYTICS",
     payload: context,
   });

@@ -33,6 +33,11 @@ const VIEWER_COUNT_SELECTORS = [
   "[data-a-target='animated-channel-viewers-count']",
   "[data-a-target='channel-viewers-count']",
 ];
+const VIEWER_COUNT_ROOT_SELECTORS = [
+  ".ffz--meta-tray",
+  "#live-channel-stream-information",
+  ".channel-info-content",
+];
 
 function detectChannelName(): string | null {
   const parts = window.location.pathname.split("/").filter(Boolean);
@@ -60,14 +65,34 @@ function readChannelGame(): string {
 }
 
 function findViewerCountElement(): Element | null {
-  for (const selector of VIEWER_COUNT_SELECTORS) {
-    const element = document.querySelector(selector);
-    if (element) {
-      return element;
+  for (const rootSelector of VIEWER_COUNT_ROOT_SELECTORS) {
+    const root = document.querySelector(rootSelector);
+    if (!root) {
+      continue;
+    }
+
+    for (const selector of VIEWER_COUNT_SELECTORS) {
+      const element = root.querySelector(selector);
+      if (element) {
+        return element;
+      }
     }
   }
 
-  return null;
+  let singleCandidate: Element | null = null;
+  for (const selector of VIEWER_COUNT_SELECTORS) {
+    const elements = Array.from(document.querySelectorAll(selector));
+    if (elements.length === 1) {
+      singleCandidate = elements[0];
+      continue;
+    }
+
+    if (elements.length > 1) {
+      return null;
+    }
+  }
+
+  return singleCandidate;
 }
 
 function findMountPoint(): MountPoint | null {
@@ -119,17 +144,20 @@ function findMountPoint(): MountPoint | null {
   return null;
 }
 
-function parseViewerCount(text: string | null | undefined): string {
+function parseViewerCount(text: string | null | undefined, requireViewerLabel = true): string {
   if (!text) {
     return "";
   }
 
-  const match = text.match(/([\d,.]+(?:\s*[kKmM])?)\s*(?:viewer|viewers)\b/i);
+  const pattern = requireViewerLabel
+    ? /([\d,.]+(?:\s*[kKmM])?)\s*(?:viewer|viewers)\b/i
+    : /([\d,.]+(?:\s*[kKmM])?)/i;
+  const match = text.match(pattern);
   return match ? match[1].replace(/\s+/g, "").toUpperCase() : "";
 }
 
 function readViewerCount(): string {
-  const parsedDirect = parseViewerCount(findViewerCountElement()?.textContent);
+  const parsedDirect = parseViewerCount(findViewerCountElement()?.textContent, false);
   if (parsedDirect) {
     return parsedDirect;
   }

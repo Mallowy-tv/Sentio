@@ -84,6 +84,7 @@ export function DashboardApp() {
           ...current,
           channelName: channel.name,
           channelGame: channel.game,
+          viewerCount: "",
         }))
       }
     />

@@ -9,6 +9,7 @@ type UserInfo = {
   createdAt: string | null;
   description: string | null;
   profileImageURL: string | null;
+  status: "resolved" | "unavailable" | "failed";
 };
 
 const GQL_URL = "https://gql.twitch.tv/gql";
@@ -103,29 +104,31 @@ export async function getUserInfoGraphQL(usernames: string[]): Promise<UserInfo[
         query: "query GetUserBasic($login: String!) { user(login: $login) { login displayName createdAt description profileImageURL(width: 300) } }",
       }));
 
-      const response = await request<Array<{ data?: { user?: { login?: string; displayName?: string; createdAt?: string; description?: string | null; profileImageURL?: string | null } | null } }>>(payload);
-      return batch.map((username, index) => {
-        const user = response[index]?.data?.user;
-        return {
-          username,
-          displayName: user?.displayName ?? null,
-          createdAt: user?.createdAt ?? null,
-          description: user?.description ?? null,
-          profileImageURL: user?.profileImageURL ?? null,
-        };
-      });
-    }),
+        const response = await request<Array<{ data?: { user?: { login?: string; displayName?: string; createdAt?: string; description?: string | null; profileImageURL?: string | null } | null } }>>(payload);
+        return batch.map<UserInfo>((username, index) => {
+          const user = response[index]?.data?.user;
+          return {
+            username,
+            displayName: user?.displayName ?? null,
+            createdAt: user?.createdAt ?? null,
+            description: user?.description ?? null,
+            profileImageURL: user?.profileImageURL ?? null,
+            status: user ? "resolved" : "unavailable",
+          };
+        });
+      }),
   );
 
   return results.flatMap((result, index) =>
     result.status === "fulfilled"
-      ? result.value
-      : batches[index].map((username) => ({
-          username,
-          displayName: null,
-          createdAt: null,
-          description: null,
-          profileImageURL: null,
-        })),
+        ? result.value
+        : batches[index].map<UserInfo>((username) => ({
+            username,
+            displayName: null,
+            createdAt: null,
+            description: null,
+            profileImageURL: null,
+            status: "failed",
+          })),
   );
 }

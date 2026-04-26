@@ -702,7 +702,7 @@ export function ScannerDashboard({
                               <TooltipContent>{new Date(viewer.createdAt).toLocaleDateString()}</TooltipContent>
                             </UITooltip>
                           ) : (
-                            <span className="font-mono text-xs text-muted-foreground">Pending</span>
+                            <span className="font-mono text-xs text-muted-foreground">{viewer.userInfoStatus === "pending" ? "Pending" : "Unknown"}</span>
                           )}
                         </td>
                         <td className="px-4 py-2 text-right font-mono text-xs tabular-nums">{viewer.watchTimeMinutes}m</td>

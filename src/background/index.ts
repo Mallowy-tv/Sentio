@@ -31,6 +31,7 @@ const SNAPSHOT_TTL_MS = 5_000;
 const MAX_HISTORY_POINTS = 24 * 60;
 const VIEWER_SAMPLE_CONCURRENT_CALLS = 20;
 const USER_INFO_DRAIN_BATCH_SIZE = 200;
+const LURKER_REMARK_MIN_TRACKING_MINUTES = 15;
 const ACTION_ENABLED_TITLE = "Open Sentio dashboard";
 const ACTION_DISABLED_TITLE = "Sentio is only available on Twitch channel pages";
 const EXCLUDED_TWITCH_PATHS = new Set([
@@ -263,9 +264,14 @@ function applyUserInfoToSession(session: ChannelSession, userInfo: Awaited<Retur
       return;
     }
 
+    if (user.status === "failed") {
+      return;
+    }
+
     existing.createdAt = user.createdAt;
     existing.description = user.description;
     existing.profileImageURL = user.profileImageURL;
+    existing.userInfoStatus = user.status;
   });
 }
 
@@ -279,15 +285,16 @@ function ensureUserInfoDrain(session: ChannelSession): void {
       const batch = Array.from(session.pendingUsernames).slice(0, USER_INFO_DRAIN_BATCH_SIZE);
       const userInfo = await getUserInfoGraphQL(batch);
       applyUserInfoToSession(session, userInfo);
-      batch.forEach((username) => session.pendingUsernames.delete(username));
+      const completedUsernames = userInfo.filter((user) => user.status !== "failed").map((user) => user.username);
+      completedUsernames.forEach((username) => session.pendingUsernames.delete(username));
+      if (completedUsernames.length === 0) {
+        break;
+      }
     }
   })()
     .catch(() => undefined)
     .finally(() => {
       session.enrichmentPromise = undefined;
-      if (session.pendingUsernames.size > 0) {
-        ensureUserInfoDrain(session);
-      }
     });
 }
 
@@ -428,10 +435,10 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
     viewer.accountsOnSameDay = viewer.createdAt ? dayCounts.get(dayKeyFromDate(viewer.createdAt)) || 0 : 0;
     viewer.watchTimeMinutes = Math.max(0, Math.round((viewer.lastSeen - viewer.firstSeen) / 60000));
 
-    if (!viewer.createdAt) {
+    if (viewer.userInfoStatus === "resolved" && !viewer.createdAt) {
       tags.push("missing_created_at");
       score += 8;
-    } else {
+    } else if (viewer.createdAt) {
       const createdAt = new Date(viewer.createdAt);
       const ageDays = Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / 86400000));
       const monthInfo = monthFlags.get(monthKeyFromDate(viewer.createdAt));
@@ -456,7 +463,7 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
       }
     }
 
-    if (!viewer.description) {
+    if (viewer.userInfoStatus === "resolved" && !viewer.description) {
       tags.push("no_description");
       score += 10;
     }
@@ -487,12 +494,20 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
   };
 }
 
-function buildChannelRemarks(viewers: Viewer[], liveViewerCount: number): ChannelRemark[] {
+function getTrackedHistoryMinutes(history: ChannelSession["history"]): number {
+  if (history.length < 2) {
+    return 0;
+  }
+
+  return Math.max(0, (history[history.length - 1].timestamp - history[0].timestamp) / 60000);
+}
+
+function buildChannelRemarks(viewers: Viewer[], liveViewerCount: number, trackedMinutes: number): ChannelRemark[] {
   const presentViewers = viewers.filter((viewer) => viewer.present);
   const shortWatchPresent = presentViewers.filter((viewer) => viewer.watchTimeMinutes < 5).length;
   const suspiciousPresent = presentViewers.filter((viewer) => scoreBand(viewer.score) === "suspicious").length;
 
-  if (liveViewerCount < 75 || presentViewers.length < 40) {
+  if (trackedMinutes < LURKER_REMARK_MIN_TRACKING_MINUTES || liveViewerCount < 75 || presentViewers.length < 40) {
     return [];
   }
 
@@ -625,7 +640,7 @@ function applyLiveViewerCountOverride(session: ChannelSession, viewerCountText?:
     timeline: [],
     timelineSpanMinutes: 0,
     timelineResolutionMinutes: 1,
-    remarks: buildChannelRemarks(session.latestSnapshot.viewers, liveViewerCount),
+    remarks: buildChannelRemarks(session.latestSnapshot.viewers, liveViewerCount, getTrackedHistoryMinutes(session.history)),
   };
 
   const timeline = mapTimeline(session.history);
@@ -678,6 +693,7 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
         createdAt: null,
         description: null,
         profileImageURL: null,
+        userInfoStatus: "pending",
         firstSeen: seenAt,
         lastSeen: seenAt,
         watchTimeMinutes: 0,
@@ -722,7 +738,7 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
       timeline: [],
       timelineSpanMinutes: 0,
       timelineResolutionMinutes: 1,
-      remarks: buildChannelRemarks(analyzed.viewers, liveViewerCount),
+      remarks: buildChannelRemarks(analyzed.viewers, liveViewerCount, getTrackedHistoryMinutes(session.history)),
     };
 
     const timeline = mapTimeline(session.history);

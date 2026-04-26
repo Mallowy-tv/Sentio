@@ -96,7 +96,12 @@ export function InlineWidget({ channelName, channelGame, viewerCount }: InlineWi
   }, [snapshot]);
 
   async function openDashboard() {
-    await chrome.runtime.sendMessage({
+    const runtime = globalThis.chrome?.runtime;
+    if (!runtime?.id) {
+      return;
+    }
+
+    await runtime.sendMessage({
       type: "OPEN_DASHBOARD",
       payload: {
         channelName,

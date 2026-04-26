@@ -22,6 +22,7 @@ export type Viewer = {
   createdAt: string | null;
   description: string | null;
   profileImageURL: string | null;
+  userInfoStatus: "pending" | "resolved" | "unavailable";
   firstSeen: number;
   lastSeen: number;
   watchTimeMinutes: number;
