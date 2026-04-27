@@ -413,7 +413,7 @@ function calculateBotCounts(monthlyCounts: Map<string, number>, startDate: Date,
   return { totalBots, monthData };
 }
 
-function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
+function analyzeViewers(viewersMap: Map<string, SessionViewer>, streamLive = true) {
   const viewers = Array.from(viewersMap.values());
   const viewersWithDates = viewers.filter((viewer) => viewer.createdAt);
   const { monthlyCounts, dayCounts } = buildAccountCreationCounts(viewers);
@@ -527,7 +527,7 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>) {
       score: Math.max(0, Math.min(100, score)),
       tags,
       scoreBreakdown,
-      present: Date.now() - viewer.lastSeen < 120_000,
+      present: streamLive && Date.now() - viewer.lastSeen < 120_000,
     } satisfies Viewer;
   });
 
@@ -670,6 +670,10 @@ function applyLiveViewerCountOverride(session: ChannelSession, viewerCountText?:
     return undefined;
   }
 
+  if (!session.latestSnapshot.streamLive) {
+    return session.latestSnapshot;
+  }
+
   const liveViewerCount = parseCompactNumber(viewerCountText);
   if (liveViewerCount === null || liveViewerCount === session.latestSnapshot.liveViewerCount) {
     return session.latestSnapshot;
@@ -720,14 +724,50 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
   }
 
   session.refreshPromise = (async () => {
-    const [liveViewerCountRaw, viewerSample] = await Promise.all([
-      getViewerCount(context.channelName!),
-      getViewerListParallel(context.channelName!, VIEWER_SAMPLE_CONCURRENT_CALLS),
-    ]);
-
-    const fallbackViewerCount = parseCompactNumber(context.viewerCount);
-    const liveViewerCount = liveViewerCountRaw || fallbackViewerCount || session.latestSnapshot?.liveViewerCount || 0;
+    const liveViewerCount = await getViewerCount(context.channelName!);
     const seenAt = Date.now();
+
+    if (liveViewerCount <= 0) {
+      const analyzed = analyzeViewers(session.viewers, false);
+      upsertTimeline(session, 0, 0, 0);
+
+      const snapshot: ChannelSnapshot = {
+        channel: session.channel,
+        streamLive: false,
+        liveViewerCount: 0,
+        authenticatedCount: 0,
+        sampledCount: analyzed.viewers.length,
+        suspiciousCount: analyzed.suspiciousCount,
+        watchCount: analyzed.watchCount,
+        safeCount: analyzed.safeCount,
+        newAccountCount: analyzed.newAccountCount,
+        pendingCount: 0,
+        updatedAt: Date.now(),
+        viewers: analyzed.viewers,
+        timeline: [],
+        timelineSpanMinutes: 0,
+        timelineResolutionMinutes: 1,
+        remarks: [],
+      };
+
+      const timeline = mapTimeline(session.history);
+      snapshot.timeline = timeline.points;
+      snapshot.timelineSpanMinutes = timeline.spanMinutes;
+      snapshot.timelineResolutionMinutes = timeline.resolutionMinutes;
+
+      session.latestSnapshot = snapshot;
+      session.lastFetchedAt = Date.now();
+      return snapshot;
+    }
+
+    if (session.latestSnapshot && !session.latestSnapshot.streamLive) {
+      session.viewers.clear();
+      session.pendingUsernames.clear();
+      session.history = [];
+      session.latestSnapshot = undefined;
+    }
+
+    const viewerSample = await getViewerListParallel(context.channelName!, VIEWER_SAMPLE_CONCURRENT_CALLS);
 
     viewerSample.viewers.forEach((username) => {
       const existing = session.viewers.get(username);
@@ -769,11 +809,12 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
 
     ensureUserInfoDrain(session);
 
-    const analyzed = analyzeViewers(session.viewers);
+    const analyzed = analyzeViewers(session.viewers, true);
     upsertTimeline(session, liveViewerCount, analyzed.suspiciousCount, viewerSample.totalAuthenticatedCount);
 
     const snapshot: ChannelSnapshot = {
       channel: session.channel,
+      streamLive: true,
       liveViewerCount,
       authenticatedCount: viewerSample.totalAuthenticatedCount,
       sampledCount: analyzed.viewers.length,
@@ -861,6 +902,25 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   if (payload.type === "GET_LAST_DASHBOARD_CONTEXT") {
     getStoredContext()
       .then((context) => sendResponse({ success: true, context }))
+      .catch((error: Error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (payload.type === "GET_CHANNEL_LIVE_STATUS") {
+    const channelName = payload.payload?.channelName;
+    if (!channelName) {
+      sendResponse({ success: false, error: "Missing channel name" });
+      return false;
+    }
+
+    getViewerCount(channelName)
+      .then((liveViewerCount) =>
+        sendResponse({
+          success: true,
+          streamLive: liveViewerCount > 0,
+          liveViewerCount,
+        }),
+      )
       .catch((error: Error) => sendResponse({ success: false, error: error.message }));
     return true;
   }

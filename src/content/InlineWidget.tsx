@@ -80,10 +80,21 @@ export function InlineWidget({ channelName, channelGame, viewerCount }: InlineWi
   const viewers = useMemo(() => snapshot?.viewers ?? [], [snapshot]);
   const timeline = useMemo(() => snapshot?.timeline ?? [], [snapshot]);
   const liveFromPage = useMemo(() => parseCompactNumber(viewerCount), [viewerCount]);
+  const streamLive = snapshot?.streamLive ?? (liveFromPage ?? 0) > 0;
   const live = useMemo(() => {
-    return liveFromPage ?? snapshot?.liveViewerCount ?? timeline[timeline.length - 1]?.viewers ?? 0;
+    if (snapshot) {
+      return snapshot.streamLive ? snapshot.liveViewerCount : 0;
+    }
+
+    return liveFromPage ?? timeline[timeline.length - 1]?.viewers ?? 0;
   }, [liveFromPage, snapshot, timeline]);
-  const liveSuspicious = useMemo(() => snapshot?.suspiciousCount ?? timeline[timeline.length - 1]?.suspicious ?? 0, [snapshot, timeline]);
+  const liveSuspicious = useMemo(() => {
+    if (snapshot) {
+      return snapshot.streamLive ? snapshot.suspiciousCount : 0;
+    }
+
+    return timeline[timeline.length - 1]?.suspicious ?? 0;
+  }, [snapshot, timeline]);
   const sampledSus = useMemo(() => viewers.filter((viewer) => scoreBand(viewer.score) === "suspicious").length, [viewers]);
   const sampledWatch = useMemo(() => viewers.filter((viewer) => scoreBand(viewer.score) === "watch").length, [viewers]);
   const susPct = useMemo(() => ((liveSuspicious / Math.max(live, 1)) * 100).toFixed(1), [live, liveSuspicious]);
@@ -130,11 +141,11 @@ export function InlineWidget({ channelName, channelGame, viewerCount }: InlineWi
                 <span className="bt-player-popup-live">{live.toLocaleString()}</span>
                 <span className="bt-player-popup-live-suspicious">({liveSuspicious} suspected bots)</span>
               </div>
-              <div className="bt-player-popup-subtitle">{susPct}% of current viewers flagged</div>
+              <div className="bt-player-popup-subtitle">{streamLive ? `${susPct}% of current viewers flagged` : "Sampling paused until the stream is live again"}</div>
             </div>
             <span className="bt-player-popup-status">
               <span className="bt-player-popup-status-dot" />
-              scanning
+              {streamLive ? "scanning" : "offline"}
             </span>
           </div>
 

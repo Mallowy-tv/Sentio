@@ -57,6 +57,7 @@ export type ChannelRemark = {
 
 export type ChannelSnapshot = {
   channel: Channel;
+  streamLive: boolean;
   liveViewerCount: number;
   authenticatedCount: number;
   sampledCount: number;

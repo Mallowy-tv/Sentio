@@ -1,5 +1,5 @@
 import { createRoot, type Root } from "react-dom/client";
-import { warmChannelAnalytics } from "@/shared/analyticsClient";
+import { requestChannelLiveStatus, warmChannelAnalytics } from "@/shared/analyticsClient";
 import { InlineWidget } from "./InlineWidget";
 import "./content.css";
 
@@ -28,6 +28,15 @@ let rootNode: HTMLDivElement | null = null;
 let root: Root | null = null;
 let lastSignature = "";
 let warmScanInFlight = false;
+let pageObserver: MutationObserver | null = null;
+let renderIntervalId: number | null = null;
+let warmScanIntervalId: number | null = null;
+let routeSyncIntervalId: number | null = null;
+let observersActive = false;
+let liveStatusCheckInFlight = false;
+let lastLiveStatusChannel = "";
+let lastLiveStatusAt = 0;
+let lastKnownStreamLive = false;
 
 const VIEWER_COUNT_SELECTORS = [
   "[data-a-target='animated-channel-viewers-count']",
@@ -231,6 +240,101 @@ function renderWidget() {
   );
 }
 
+function stopEligiblePageWork() {
+  pageObserver?.disconnect();
+  pageObserver = null;
+
+  if (renderIntervalId !== null) {
+    window.clearInterval(renderIntervalId);
+    renderIntervalId = null;
+  }
+
+  if (warmScanIntervalId !== null) {
+    window.clearInterval(warmScanIntervalId);
+    warmScanIntervalId = null;
+  }
+
+  rootNode?.remove();
+  lastSignature = "";
+  observersActive = false;
+}
+
+function startEligiblePageWork() {
+  if (observersActive) {
+    renderWidget();
+    return;
+  }
+
+  observersActive = true;
+  renderWidget();
+  warmActiveStreamScan();
+
+  pageObserver = new MutationObserver(() => {
+    renderWidget();
+  });
+
+  pageObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+
+  renderIntervalId = window.setInterval(() => {
+    renderWidget();
+  }, 1000);
+
+  warmScanIntervalId = window.setInterval(() => {
+    warmActiveStreamScan();
+  }, 5000);
+}
+
+async function syncEligiblePageWork() {
+  const channelName = detectChannelName();
+  if (!channelName) {
+    stopEligiblePageWork();
+    lastLiveStatusChannel = "";
+    lastLiveStatusAt = 0;
+    lastKnownStreamLive = false;
+    return;
+  }
+
+  const now = Date.now();
+  const shouldRefreshStatus = channelName !== lastLiveStatusChannel || now - lastLiveStatusAt >= 5000;
+
+  if (!shouldRefreshStatus) {
+    if (lastKnownStreamLive) {
+      if (!observersActive) {
+        startEligiblePageWork();
+      }
+    } else {
+      stopEligiblePageWork();
+    }
+    return;
+  }
+
+  if (liveStatusCheckInFlight) {
+    return;
+  }
+
+  liveStatusCheckInFlight = true;
+  try {
+    const liveStatus = await requestChannelLiveStatus(channelName);
+    lastLiveStatusChannel = channelName;
+    lastLiveStatusAt = Date.now();
+    lastKnownStreamLive = liveStatus.streamLive;
+
+    if (liveStatus.streamLive) {
+      startEligiblePageWork();
+      return;
+    }
+
+    stopEligiblePageWork();
+  } catch {
+    // Keep the current page state if the lightweight live check fails.
+  } finally {
+    liveStatusCheckInFlight = false;
+  }
+}
+
 async function warmActiveStreamScan(): Promise<void> {
   const channelName = detectChannelName();
   if (!channelName || warmScanInFlight) {
@@ -252,25 +356,13 @@ async function warmActiveStreamScan(): Promise<void> {
 }
 
 function start() {
-  renderWidget();
-  warmActiveStreamScan();
+  syncEligiblePageWork().catch(() => undefined);
 
-  const observer = new MutationObserver(() => {
-    renderWidget();
-  });
-
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
-
-  window.setInterval(() => {
-    renderWidget();
-  }, 1000);
-
-  window.setInterval(() => {
-    warmActiveStreamScan();
-  }, 5000);
+  if (routeSyncIntervalId === null) {
+    routeSyncIntervalId = window.setInterval(() => {
+      syncEligiblePageWork().catch(() => undefined);
+    }, 1000);
+  }
 }
 
 if (document.readyState === "loading") {
