@@ -209,11 +209,25 @@ function ensureRoot(mountPoint: MountPoint): void {
   }
 }
 
+function clearWidget() {
+  root?.render(null);
+  rootNode?.remove();
+  lastSignature = "";
+}
+
+function isFullscreenActive(): boolean {
+  return document.fullscreenElement !== null;
+}
+
 function renderWidget() {
+  if (isFullscreenActive()) {
+    clearWidget();
+    return;
+  }
+
   const channelName = detectChannelName();
   if (!channelName) {
-    rootNode?.remove();
-    lastSignature = "";
+    clearWidget();
     return;
   }
 
@@ -254,8 +268,7 @@ function stopEligiblePageWork() {
     warmScanIntervalId = null;
   }
 
-  rootNode?.remove();
-  lastSignature = "";
+  clearWidget();
   observersActive = false;
 }
 
@@ -288,6 +301,11 @@ function startEligiblePageWork() {
 }
 
 async function syncEligiblePageWork() {
+  if (isFullscreenActive()) {
+    stopEligiblePageWork();
+    return;
+  }
+
   const channelName = detectChannelName();
   if (!channelName) {
     stopEligiblePageWork();
@@ -357,6 +375,10 @@ async function warmActiveStreamScan(): Promise<void> {
 
 function start() {
   syncEligiblePageWork().catch(() => undefined);
+
+  document.addEventListener("fullscreenchange", () => {
+    syncEligiblePageWork().catch(() => undefined);
+  });
 
   if (routeSyncIntervalId === null) {
     routeSyncIntervalId = window.setInterval(() => {
