@@ -1,23 +1,23 @@
 {
-  "name": "bottracker",
-  "version": "1.0.0",
-  "description": "BotTracker Twitch extension built with Vite, React, and TypeScript.",
+  "name": "Sentio",
+  "version": "1.1.0",
+  "description": "Sentio Twitch extension built with Vite, React, and TypeScript.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Mallowy-tv/SentinelTracker.git"
+    "url": "git+https://github.com/Mallowy-tv/Sentio.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "bugs": {
-    "url": "https://github.com/Mallowy-tv/SentinelTracker/issues"
+    "url": "https://github.com/Mallowy-tv/Sentio/issues"
   },
-  "homepage": "https://github.com/Mallowy-tv/SentinelTracker#readme",
+  "homepage": "https://github.com/Mallowy-tv/Sentio#readme",
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-popover": "^1.1.15",
