@@ -1,5 +1,6 @@
 import {
   buildChannel,
+  formatClockTime,
   isDefaultProfileImageURL,
   parseCompactNumber,
   scoreBand,
@@ -172,6 +173,24 @@ function mergeRecentChannels(existing: DashboardChannel[] | undefined, current: 
   }
 
   return Array.from(merged.values()).slice(0, 8);
+}
+
+function resolveDashboardContext(context: DashboardContext, session?: ChannelSession, snapshot?: ChannelSnapshot | null): DashboardContext {
+  const channel = snapshot?.channel ?? session?.channel;
+
+  return {
+    ...context,
+    channelName: context.channelName || channel?.name || "",
+    channelDisplayName: channel?.displayName || context.channelDisplayName || context.channelName || "",
+    channelGame: channel?.game || context.channelGame || "Live channel",
+    channelAvatarColor: channel?.avatarColor || context.channelAvatarColor || "",
+    channelProfileImageURL: channel?.profileImageURL ?? context.channelProfileImageURL ?? null,
+    viewerCount:
+      context.viewerCount ||
+      snapshot?.liveViewerCount?.toString() ||
+      session?.latestSnapshot?.liveViewerCount?.toString() ||
+      "",
+  };
 }
 
 async function storeContext(context: DashboardContext = {}): Promise<void> {
@@ -654,9 +673,8 @@ function mapTimeline(history: ChannelSession["history"]): { points: TimelinePoin
     spanMinutes,
     resolutionMinutes,
     points: bucketed.map((point) => {
-      const stamp = new Date(point.timestamp);
       return {
-        t: `${String(stamp.getHours()).padStart(2, "0")}:${String(stamp.getMinutes()).padStart(2, "0")}`,
+        t: formatClockTime(point.timestamp),
         viewers: point.viewers,
         suspicious: point.suspicious,
         authenticated: point.authenticated,
@@ -710,17 +728,20 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
     return { snapshot: null, recentChannels: getActiveChannels() };
   }
 
-  await storeContext(context);
   const session = ensureSession(context.channelName, context.channelGame, context.channelAvatarColor);
   const now = Date.now();
 
   if (session.latestSnapshot && now - session.lastFetchedAt < SNAPSHOT_TTL_MS) {
-    return { snapshot: applyLiveViewerCountOverride(session, context.viewerCount) ?? session.latestSnapshot, recentChannels: getActiveChannels() };
+    const snapshot = applyLiveViewerCountOverride(session, context.viewerCount) ?? session.latestSnapshot;
+    await storeContext(resolveDashboardContext(context, session, snapshot));
+    return { snapshot, recentChannels: getActiveChannels() };
   }
 
   if (session.refreshPromise) {
     const snapshot = await session.refreshPromise;
-    return { snapshot: applyLiveViewerCountOverride(session, context.viewerCount) ?? snapshot, recentChannels: getActiveChannels() };
+    const resolvedSnapshot = applyLiveViewerCountOverride(session, context.viewerCount) ?? snapshot;
+    await storeContext(resolveDashboardContext(context, session, resolvedSnapshot));
+    return { snapshot: resolvedSnapshot, recentChannels: getActiveChannels() };
   }
 
   session.refreshPromise = (async () => {
@@ -842,7 +863,9 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
   })();
 
   try {
-    return { snapshot: await session.refreshPromise, recentChannels: getActiveChannels() };
+    const snapshot = await session.refreshPromise;
+    await storeContext(resolveDashboardContext(context, session, snapshot));
+    return { snapshot, recentChannels: getActiveChannels() };
   } finally {
     session.refreshPromise = undefined;
   }

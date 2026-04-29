@@ -164,6 +164,19 @@ export function formatTimelineSpan(minutes: number): string {
   return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 
+export function formatClockTime(value: Date | number | string): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date);
+}
+
 export function scoreBand(score: number): "safe" | "watch" | "suspicious" {
   if (score >= 44) return "suspicious";
   if (score >= 18) return "watch";

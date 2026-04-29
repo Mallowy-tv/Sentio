@@ -29,6 +29,7 @@ import {
   bucketCreationByMonth,
   bucketWatchTime,
   buildChannel,
+  formatClockTime,
   formatTimelineSpan,
   scoreBand,
   tagBreakdown,
@@ -536,8 +537,8 @@ export function ScannerDashboard({
                     {[
                       ["Created", selected.createdAt ? formatDistanceToNowStrict(new Date(selected.createdAt), { addSuffix: true }) : "Unknown"],
                       ["Watching", `${selected.watchTimeMinutes}m`],
-                      ["First seen", new Date(selected.firstSeen).toLocaleTimeString()],
-                      ["Last seen", new Date(selected.lastSeen).toLocaleTimeString()],
+                      ["First seen", formatClockTime(selected.firstSeen)],
+                      ["Last seen", formatClockTime(selected.lastSeen)],
                       ["Same day", selected.accountsOnSameDay ? selected.accountsOnSameDay : "—"],
                       ["Status", selected.present ? "Seen now" : "Sampled earlier"],
                     ].map(([key, value]) => (
