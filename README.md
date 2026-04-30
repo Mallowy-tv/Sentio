@@ -9,15 +9,15 @@ Sentio is a browser extension for people who want a clearer view of what is happ
 >
 > This tool is directional. Refresh issues, signed-out viewers, Twitch sampling limits, and missing profile data can all affect the result.
 
-## Quick start
+## 🚀 Quick start
 
-### Install from the Chrome Web Store
+### 🛍️ Install from the Chrome Web Store
 
 Install Sentio here:
 
 **https://chromewebstore.google.com/detail/sentio/fcljbfiejekfhbckfoamdanldhphmiii**
 
-### Alternative install: unpacked extension
+### 🧩 Alternative install: unpacked extension
 
 If you want to install Sentio manually, keep using the unpacked build.
 
@@ -48,7 +48,7 @@ If you want to install Sentio manually, keep using the unpacked build.
 
 </details>
 
-## What Sentio does
+## ✨ What Sentio does
 
 - Shows a Sentio viewer counter under a live Twitch stream
 - Opens a quick popup when you click the counter
@@ -57,7 +57,7 @@ If you want to install Sentio manually, keep using the unpacked build.
 - Highlights signals like **New account**, **Day cluster**, **No bio**, and **Short watch**
 - Shows charts and viewer-level breakdowns to make patterns easier to review
 
-## Usage
+## 🎮 Usage
 
 1. Open a live Twitch channel page.
 2. Look under the video for the Sentio viewer counter.
@@ -69,7 +69,7 @@ If you want to install Sentio manually, keep using the unpacked build.
 > [!NOTE]
 > Sentio only works on real Twitch channel pages. If you are on a non-channel page, the extension button will be disabled and grayed out.
 
-## Understanding the numbers
+## 🔎 Understanding the numbers
 
 | Number | What it means |
 | --- | --- |
@@ -83,7 +83,7 @@ If you want to install Sentio manually, keep using the unpacked build.
 >
 > For example, **Sampled** can be much higher than **Live viewers** because Sentio keeps a running session set of accounts seen across repeated samples, not just the people visible right now.
 
-## Labels
+## 🏷️ Labels
 
 | Label | Meaning |
 | --- | --- |
@@ -96,7 +96,7 @@ If you want to install Sentio manually, keep using the unpacked build.
 
 These labels are signals, not verdicts.
 
-## FAQ
+## ❓ FAQ
 
 <details>
 <summary><strong>Does Sentio prove that someone is botting?</strong></summary>
@@ -140,6 +140,6 @@ No. You can use the viewer counter, popup, dashboard, filters, and built-in help
 
 </details>
 
-## In simple terms
+## 🟣 In simple terms
 
 Sentio is best used as a **signal tool**. It helps you notice patterns that may deserve a closer look. It should not be treated as a final answer on its own.
