@@ -1,4 +1,5 @@
 export const DASHBOARD_STORAGE_KEY = "lastDashboardContext";
+export const EXPERIMENTAL_SETTINGS_STORAGE_KEY = "experimentalSettings";
 export const DASHBOARD_PAGE = "dashboard.html";
 
 export type DashboardChannel = {
@@ -18,4 +19,8 @@ export type DashboardContext = {
   viewerCount?: string;
   recentChannels?: DashboardChannel[];
   updatedAt?: number;
+};
+
+export type ExperimentalSettings = {
+  enhancedDetectionSignals?: boolean;
 };

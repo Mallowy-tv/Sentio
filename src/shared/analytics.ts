@@ -11,6 +11,7 @@ export type ScoreTag =
   | "new_account"
   | "clustered_creation"
   | "same_day_cluster"
+  | "repeated_bio"
   | "no_description"
   | "default_avatar"
   | "missing_created_at"
@@ -21,6 +22,20 @@ export type ScoreContribution = {
   label: string;
   points: number;
   detail: string;
+};
+
+export type ViewerEventKind = "sample" | "profile" | "score";
+
+export type ViewerEvent = {
+  id: string;
+  at: number;
+  kind: ViewerEventKind;
+  title: string;
+  detail?: string;
+  scoreBefore?: number;
+  scoreAfter?: number;
+  addedTags?: ScoreTag[];
+  removedTags?: ScoreTag[];
 };
 
 export type Viewer = {
@@ -38,6 +53,7 @@ export type Viewer = {
   score: number;
   tags: ScoreTag[];
   scoreBreakdown: ScoreContribution[];
+  events: ViewerEvent[];
   present: boolean;
 };
 
@@ -78,6 +94,7 @@ export const TAG_LABELS: Record<ScoreTag, { label: string; kind: "risk" | "trust
   new_account: { label: "New account", kind: "risk" },
   clustered_creation: { label: "Creation cluster", kind: "risk" },
   same_day_cluster: { label: "Same-day cluster", kind: "risk" },
+  repeated_bio: { label: "Repeated bio", kind: "risk" },
   no_description: { label: "No bio", kind: "risk" },
   default_avatar: { label: "Default avatar", kind: "risk" },
   missing_created_at: { label: "No creation date", kind: "risk" },

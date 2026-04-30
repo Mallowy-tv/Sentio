@@ -1,4 +1,5 @@
 import {
+  TAG_LABELS,
   buildChannel,
   formatClockTime,
   isDefaultProfileImageURL,
@@ -11,8 +12,16 @@ import {
   type ScoreTag,
   type TimelinePoint,
   type Viewer,
+  type ViewerEvent,
 } from "../shared/analytics";
-import { DASHBOARD_PAGE, DASHBOARD_STORAGE_KEY, type DashboardChannel, type DashboardContext } from "../shared/extension";
+import {
+  DASHBOARD_PAGE,
+  DASHBOARD_STORAGE_KEY,
+  EXPERIMENTAL_SETTINGS_STORAGE_KEY,
+  type DashboardChannel,
+  type DashboardContext,
+  type ExperimentalSettings,
+} from "../shared/extension";
 import { getUserInfoGraphQL, getViewerCount, getViewerListParallel } from "./twitchApi";
 
 type SessionViewer = Omit<Viewer, "present" | "displayName" | "scoreBreakdown">;
@@ -22,7 +31,9 @@ type ChannelSession = {
   viewers: Map<string, SessionViewer>;
   pendingUsernames: Set<string>;
   history: Array<{ timestamp: number; viewers: number; suspicious: number; authenticated: number }>;
+  nextViewerEventId: number;
   latestSnapshot?: ChannelSnapshot;
+  lastExperimentalSignalsEnabled?: boolean;
   lastFetchedAt: number;
   refreshPromise?: Promise<ChannelSnapshot>;
   enrichmentPromise?: Promise<void>;
@@ -35,6 +46,12 @@ const MAX_HISTORY_POINTS = 24 * 60;
 const VIEWER_SAMPLE_CONCURRENT_CALLS = 20;
 const USER_INFO_DRAIN_BATCH_SIZE = 200;
 const LURKER_REMARK_MIN_TRACKING_MINUTES = 15;
+const MAX_VIEWER_EVENTS = 25;
+const REPEATED_BIO_MIN_LENGTH = 16;
+const REPEATED_BIO_MIN_COUNT = 3;
+const REPEATED_BIO_MIN_RATIO = 0.02;
+const REPEATED_BIO_PREVIEW_LENGTH = 48;
+const VIEWER_REAPPEAR_EVENT_GAP_MS = 10 * 60 * 1000;
 const ACTION_ENABLED_TITLE = "Open Sentio dashboard";
 const ACTION_DISABLED_TITLE = "Sentio is only available on Twitch channel pages";
 const EXCLUDED_TWITCH_PATHS = new Set([
@@ -80,6 +97,86 @@ function getChannelNameFromUrl(url?: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function normalizeViewerDescription(description: string | null | undefined): string | null {
+  if (typeof description !== "string") {
+    return null;
+  }
+
+  const normalized = description.trim().replace(/\s+/g, " ").toLowerCase();
+  return normalized ? normalized : null;
+}
+
+function summarizeViewerDescription(description: string): string {
+  if (description.length <= REPEATED_BIO_PREVIEW_LENGTH) {
+    return description;
+  }
+
+  return `${description.slice(0, REPEATED_BIO_PREVIEW_LENGTH - 1)}…`;
+}
+
+function appendViewerEvent(
+  session: ChannelSession,
+  viewer: SessionViewer,
+  event: Omit<ViewerEvent, "id">,
+): void {
+  viewer.events ??= [];
+  viewer.events.push({
+    id: `${session.nextViewerEventId++}`,
+    ...event,
+  });
+
+  if (viewer.events.length > MAX_VIEWER_EVENTS) {
+    viewer.events = viewer.events.slice(-MAX_VIEWER_EVENTS);
+  }
+}
+
+function normalizeViewerEvents<T extends { events?: ViewerEvent[] }>(viewer: T): T & { events: ViewerEvent[] } {
+  viewer.events ??= [];
+  return viewer as T & { events: ViewerEvent[] };
+}
+
+function normalizeSnapshotViewerEvents(snapshot: ChannelSnapshot): ChannelSnapshot {
+  snapshot.viewers.forEach((viewer) => {
+    viewer.events ??= [];
+  });
+  return snapshot;
+}
+
+function describeViewerScoreBand(score: number): string {
+  const band = scoreBand(score);
+  if (band === "suspicious") {
+    return "High signal";
+  }
+
+  if (band === "watch") {
+    return "Needs review";
+  }
+
+  return "Low signal";
+}
+
+function formatViewerEventMinutes(totalMinutes: number): string {
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m`;
+  }
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+function formatTagLabels(tags: ScoreTag[]): string {
+  return tags.map((tag) => TAG_LABELS[tag].label).join(", ");
+}
+
+function describeProfileImageState(profileImageURL: string | null | undefined): string {
+  if (!profileImageURL) {
+    return "no avatar";
+  }
+
+  return isDefaultProfileImageURL(profileImageURL) ? "default avatar" : "custom avatar";
 }
 
 async function updateActionState(tabId: number, url?: string): Promise<void> {
@@ -217,6 +314,11 @@ async function getStoredContext(): Promise<DashboardContext | undefined> {
   return result[DASHBOARD_STORAGE_KEY] as DashboardContext | undefined;
 }
 
+async function getExperimentalSettings(): Promise<ExperimentalSettings | undefined> {
+  const result = await chrome.storage.local.get([EXPERIMENTAL_SETTINGS_STORAGE_KEY]);
+  return result[EXPERIMENTAL_SETTINGS_STORAGE_KEY] as ExperimentalSettings | undefined;
+}
+
 function getActiveChannels(): Channel[] {
   const cutoff = Date.now() - 45_000;
   return Array.from(sessions.values())
@@ -272,6 +374,7 @@ function ensureSession(channelName: string, game?: string, avatarColor?: string)
     viewers: new Map<string, SessionViewer>(),
     pendingUsernames: new Set<string>(),
     history: [],
+    nextViewerEventId: 1,
     lastFetchedAt: 0,
   };
   sessions.set(key, session);
@@ -289,10 +392,59 @@ function applyUserInfoToSession(session: ChannelSession, userInfo: Awaited<Retur
       return;
     }
 
+    const previousStatus = existing.userInfoStatus;
+    const previousCreatedAt = existing.createdAt;
+    const previousDescription = normalizeViewerDescription(existing.description);
+    const previousAvatarState = describeProfileImageState(existing.profileImageURL);
+
     existing.createdAt = user.createdAt;
     existing.description = user.description;
     existing.profileImageURL = user.profileImageURL;
     existing.userInfoStatus = user.status;
+
+    const nextDescription = normalizeViewerDescription(existing.description);
+    const nextAvatarState = describeProfileImageState(existing.profileImageURL);
+    const detailParts: string[] = [];
+
+    if (previousCreatedAt !== existing.createdAt) {
+      detailParts.push(existing.createdAt ? `Created ${new Date(existing.createdAt).toLocaleDateString()}` : "Creation date unavailable");
+    }
+
+    if (previousDescription !== nextDescription) {
+      if (nextDescription) {
+        detailParts.push(`Bio: "${summarizeViewerDescription(nextDescription)}"`);
+      } else {
+        detailParts.push("Bio empty");
+      }
+    }
+
+    if (previousAvatarState !== nextAvatarState) {
+      detailParts.push(`Avatar: ${nextAvatarState}`);
+    }
+
+    if (previousStatus !== existing.userInfoStatus) {
+      const title = existing.userInfoStatus === "resolved" ? "Profile resolved" : "Profile unavailable";
+      appendViewerEvent(session, existing, {
+        at: Date.now(),
+        kind: "profile",
+        title,
+        detail:
+          detailParts.join(" · ") ||
+          (existing.userInfoStatus === "resolved"
+            ? "Profile details became available from Twitch."
+            : "Twitch did not return profile details for this account."),
+      });
+      return;
+    }
+
+    if (detailParts.length > 0) {
+      appendViewerEvent(session, existing, {
+        at: Date.now(),
+        kind: "profile",
+        title: "Profile updated",
+        detail: detailParts.join(" · "),
+      });
+    }
   });
 }
 
@@ -432,9 +584,24 @@ function calculateBotCounts(monthlyCounts: Map<string, number>, startDate: Date,
   return { totalBots, monthData };
 }
 
-function analyzeViewers(viewersMap: Map<string, SessionViewer>, streamLive = true) {
-  const viewers = Array.from(viewersMap.values());
+function analyzeViewers(session: ChannelSession, streamLive = true, enhancedDetectionSignals = false) {
+  const viewers = Array.from(session.viewers.values());
   const viewersWithDates = viewers.filter((viewer) => viewer.createdAt);
+  const resolvedViewers = viewers.filter((viewer) => viewer.userInfoStatus === "resolved");
+  const repeatedBioCounts = new Map<string, number>();
+  resolvedViewers.forEach((viewer) => {
+    const normalizedDescription = normalizeViewerDescription(viewer.description);
+    if (!normalizedDescription || normalizedDescription.length < REPEATED_BIO_MIN_LENGTH) {
+      return;
+    }
+
+    repeatedBioCounts.set(normalizedDescription, (repeatedBioCounts.get(normalizedDescription) ?? 0) + 1);
+  });
+  const blankProfileViewers = resolvedViewers.filter((viewer) => !normalizeViewerDescription(viewer.description) && isDefaultProfileImageURL(viewer.profileImageURL));
+  const blankProfileShortWatchCount = blankProfileViewers.filter(
+    (viewer) => Math.max(0, Math.round((viewer.lastSeen - viewer.firstSeen) / 60000)) < 5,
+  ).length;
+  const blankProfileShortWatchRatio = resolvedViewers.length ? blankProfileShortWatchCount / resolvedViewers.length : 0;
   const { monthlyCounts, dayCounts } = buildAccountCreationCounts(viewers);
   const baselineStats = calculateBaselineStats(monthlyCounts, new Date(BOT_DATE_RANGE_START));
   const maxExpectedAccounts = calculateMaxExpectedAccounts(
@@ -450,9 +617,15 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>, streamLive = tru
   );
 
   const analyzed = viewers.map((viewer) => {
+    normalizeViewerEvents(viewer);
     const tags: ScoreTag[] = [];
     const scoreBreakdown: ScoreContribution[] = [];
     let score = 0;
+    const normalizedDescription = normalizeViewerDescription(viewer.description);
+    const previousScore = viewer.score;
+    const previousTags = [...viewer.tags];
+    const previousBand = describeViewerScoreBand(previousScore);
+    const hadScoreEvent = viewer.events.some((event) => event.kind === "score");
     const addScore = (id: string, label: string, points: number, detail: string) => {
       if (points <= 0) {
         return;
@@ -495,7 +668,9 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>, streamLive = tru
 
       if (viewer.accountsOnSameDay >= 5) {
         tags.push("same_day_cluster");
-        const dayClusterPoints = Math.min(12, (viewer.accountsOnSameDay - 4) * 2);
+        const dayClusterPoints = enhancedDetectionSignals
+          ? Math.min(22, 10 + (viewer.accountsOnSameDay - 5) * 2)
+          : Math.min(12, (viewer.accountsOnSameDay - 4) * 2);
         addScore(
           "same_day_cluster",
           "Same-day cluster",
@@ -505,7 +680,24 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>, streamLive = tru
       }
     }
 
-    if (viewer.userInfoStatus === "resolved" && !viewer.description) {
+    const repeatedBioCount = normalizedDescription ? repeatedBioCounts.get(normalizedDescription) ?? 0 : 0;
+    const repeatedBioRatio = resolvedViewers.length ? repeatedBioCount / resolvedViewers.length : 0;
+    if (
+      enhancedDetectionSignals &&
+      normalizedDescription &&
+      repeatedBioCount >= REPEATED_BIO_MIN_COUNT &&
+      repeatedBioRatio >= REPEATED_BIO_MIN_RATIO
+    ) {
+      tags.push("repeated_bio");
+      addScore(
+        "repeated_bio",
+        "Repeated bio",
+        repeatedBioCount >= 5 ? 4 : 3,
+        `${repeatedBioCount} sampled accounts share the exact same bio: "${summarizeViewerDescription(normalizedDescription)}".`,
+      );
+    }
+
+    if (viewer.userInfoStatus === "resolved" && !normalizedDescription) {
       tags.push("no_description");
       addScore("no_description", "No bio", 4, "The account has no profile description, which is a weak but useful signal when stacked.");
     }
@@ -532,6 +724,50 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>, streamLive = tru
       addScore("combo_new_day_cluster", "New account + day cluster", 8, "A new account that lands inside a same-day creation cluster is more concerning in context.");
     }
 
+    if (enhancedDetectionSignals && tags.includes("no_description") && tags.includes("default_avatar")) {
+      addScore(
+        "combo_blank_profile",
+        "Blank profile shell",
+        4,
+        "An account with both no bio and Twitch's default avatar looks much less finished than a typical long-lived viewer profile.",
+      );
+    }
+
+    if (enhancedDetectionSignals && tags.includes("no_description") && tags.includes("default_avatar") && tags.includes("short_watch")) {
+      addScore(
+        "combo_blank_profile_short_watch",
+        "Blank profile + short watch",
+        4,
+        "A blank-profile account that only appears briefly is more suspicious than either pattern alone.",
+      );
+    }
+
+    if (
+      enhancedDetectionSignals &&
+      tags.includes("no_description") &&
+      tags.includes("default_avatar") &&
+      tags.includes("short_watch") &&
+      blankProfileShortWatchCount >= 10 &&
+      blankProfileShortWatchRatio >= 0.08
+    ) {
+      const bulkShellPoints = blankProfileShortWatchRatio >= 0.2 ? 10 : blankProfileShortWatchRatio >= 0.12 ? 8 : 6;
+      addScore(
+        "combo_blank_profile_sample_pattern",
+        "Repeated blank-profile pattern",
+        bulkShellPoints,
+        `${blankProfileShortWatchCount} sampled accounts (${(blankProfileShortWatchRatio * 100).toFixed(1)}% of resolved profiles) share the same blank-profile + short-watch pattern.`,
+      );
+    }
+
+    if (enhancedDetectionSignals && tags.includes("same_day_cluster") && tags.includes("no_description") && tags.includes("default_avatar")) {
+      addScore(
+        "combo_day_cluster_blank_profile",
+        "Day cluster + blank profile",
+        6,
+        "Multiple accounts sharing the exact creation day while still having default-profile signals is harder to dismiss as random noise.",
+      );
+    }
+
     if (tags.includes("clustered_creation") && tags.includes("same_day_cluster")) {
       addScore("combo_cluster_stack", "Creation cluster stack", 10, "Both the monthly creation bucket and the exact day cluster lean in the same direction.");
     }
@@ -540,10 +776,38 @@ function analyzeViewers(viewersMap: Map<string, SessionViewer>, streamLive = tru
       addScore("combo_cluster_short_watch", "Cluster + short watch", 6, "A clustered account with very short watch-time stacks multiple weak signals.");
     }
 
+    const nextScore = Math.max(0, Math.min(100, score));
+    const nextBand = describeViewerScoreBand(nextScore);
+    const addedTags = tags.filter((tag) => !previousTags.includes(tag));
+    const removedTags = previousTags.filter((tag) => !tags.includes(tag));
+    if (!hadScoreEvent || previousScore !== nextScore || previousBand !== nextBand || addedTags.length > 0 || removedTags.length > 0) {
+      const detailParts: string[] = [`${previousBand} -> ${nextBand}`];
+      if (addedTags.length > 0) {
+        detailParts.push(`Added: ${formatTagLabels(addedTags)}`);
+      }
+      if (removedTags.length > 0) {
+        detailParts.push(`Removed: ${formatTagLabels(removedTags)}`);
+      }
+
+      appendViewerEvent(session, viewer, {
+        at: Date.now(),
+        kind: "score",
+        title: hadScoreEvent ? (previousBand !== nextBand ? "Score band changed" : "Score updated") : "Initial score calculated",
+        detail: detailParts.join(" · "),
+        scoreBefore: hadScoreEvent ? previousScore : undefined,
+        scoreAfter: nextScore,
+        addedTags,
+        removedTags,
+      });
+    }
+
+    viewer.score = nextScore;
+    viewer.tags = tags;
+
     return {
       ...viewer,
       displayName: viewer.username,
-      score: Math.max(0, Math.min(100, score)),
+      score: nextScore,
       tags,
       scoreBreakdown,
       present: streamLive && Date.now() - viewer.lastSeen < 120_000,
@@ -570,31 +834,49 @@ function getTrackedHistoryMinutes(history: ChannelSession["history"]): number {
   return Math.max(0, (history[history.length - 1].timestamp - history[0].timestamp) / 60000);
 }
 
-function buildChannelRemarks(viewers: Viewer[], liveViewerCount: number, trackedMinutes: number): ChannelRemark[] {
+function buildChannelRemarks(
+  viewers: Viewer[],
+  liveViewerCount: number,
+  trackedMinutes: number,
+  authenticatedCount: number,
+  enhancedDetectionSignals = false,
+): ChannelRemark[] {
+  const remarks: ChannelRemark[] = [];
   const presentViewers = viewers.filter((viewer) => viewer.present);
   const shortWatchPresent = presentViewers.filter((viewer) => viewer.watchTimeMinutes < 5).length;
   const suspiciousPresent = presentViewers.filter((viewer) => scoreBand(viewer.score) === "suspicious").length;
+  const authenticatedCoverage = authenticatedCount / Math.max(liveViewerCount, 1);
+  const unseenLiveViewers = Math.max(0, liveViewerCount - authenticatedCount);
+
+  if (enhancedDetectionSignals && liveViewerCount >= 1500 && authenticatedCount >= 50 && unseenLiveViewers >= 1000 && authenticatedCoverage <= 0.1) {
+    remarks.push({
+      id: "live-auth-gap",
+      title: "Large live / authenticated gap",
+      description:
+        `${authenticatedCount.toLocaleString()} authenticated viewers are visible against ${liveViewerCount.toLocaleString()} live viewers (${(authenticatedCoverage * 100).toFixed(1)}% coverage). ` +
+        "That kind of mismatch can happen when many viewers are signed out or not exposed in the community tab, but an extreme gap is also consistent with inflated live viewership.",
+      tone: "warning",
+    });
+  }
 
   if (trackedMinutes < LURKER_REMARK_MIN_TRACKING_MINUTES || liveViewerCount < 75 || presentViewers.length < 40) {
-    return [];
+    return remarks;
   }
 
   const shortWatchRatio = shortWatchPresent / Math.max(presentViewers.length, 1);
   const suspiciousRatio = suspiciousPresent / Math.max(presentViewers.length, 1);
 
   if (shortWatchRatio >= 0.65 && suspiciousRatio <= 0.3) {
-    return [
-      {
-        id: "lurker-heavy",
-        title: "Lurker-heavy audience",
-        description:
-          "Many recently seen viewers still have short watch-time. On slower chats this can simply mean a quiet, lurker-heavy audience rather than a strong bot signal.",
-        tone: "note",
-      },
-    ];
+    remarks.push({
+      id: "lurker-heavy",
+      title: "Lurker-heavy audience",
+      description:
+        "Many recently seen viewers still have short watch-time. On slower chats this can simply mean a quiet, lurker-heavy audience rather than a strong bot signal.",
+      tone: "note",
+    });
   }
 
-  return [];
+  return remarks;
 }
 
 function upsertTimeline(session: ChannelSession, liveViewerCount: number, suspiciousCount: number, authenticatedCount: number) {
@@ -683,18 +965,22 @@ function mapTimeline(history: ChannelSession["history"]): { points: TimelinePoin
   };
 }
 
-function applyLiveViewerCountOverride(session: ChannelSession, viewerCountText?: string): ChannelSnapshot | undefined {
+function applyLiveViewerCountOverride(
+  session: ChannelSession,
+  viewerCountText?: string,
+  enhancedDetectionSignals = false,
+): ChannelSnapshot | undefined {
   if (!session.latestSnapshot) {
     return undefined;
   }
 
   if (!session.latestSnapshot.streamLive) {
-    return session.latestSnapshot;
+    return normalizeSnapshotViewerEvents(session.latestSnapshot);
   }
 
   const liveViewerCount = parseCompactNumber(viewerCountText);
   if (liveViewerCount === null || liveViewerCount === session.latestSnapshot.liveViewerCount) {
-    return session.latestSnapshot;
+    return normalizeSnapshotViewerEvents(session.latestSnapshot);
   }
 
   const latest = session.history[session.history.length - 1];
@@ -711,7 +997,13 @@ function applyLiveViewerCountOverride(session: ChannelSession, viewerCountText?:
     timeline: [],
     timelineSpanMinutes: 0,
     timelineResolutionMinutes: 1,
-    remarks: buildChannelRemarks(session.latestSnapshot.viewers, liveViewerCount, getTrackedHistoryMinutes(session.history)),
+    remarks: buildChannelRemarks(
+      session.latestSnapshot.viewers,
+      liveViewerCount,
+      getTrackedHistoryMinutes(session.history),
+      session.latestSnapshot.authenticatedCount,
+      enhancedDetectionSignals,
+    ),
   };
 
   const timeline = mapTimeline(session.history);
@@ -720,7 +1012,8 @@ function applyLiveViewerCountOverride(session: ChannelSession, viewerCountText?:
   snapshot.timelineResolutionMinutes = timeline.resolutionMinutes;
 
   session.latestSnapshot = snapshot;
-  return snapshot;
+  session.lastExperimentalSignalsEnabled = enhancedDetectionSignals;
+  return normalizeSnapshotViewerEvents(snapshot);
 }
 
 async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snapshot: ChannelSnapshot | null; recentChannels: Channel[] }> {
@@ -728,18 +1021,24 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
     return { snapshot: null, recentChannels: getActiveChannels() };
   }
 
+  const experimentalSettings = await getExperimentalSettings();
+  const enhancedDetectionSignals = experimentalSettings?.enhancedDetectionSignals === true;
   const session = ensureSession(context.channelName, context.channelGame, context.channelAvatarColor);
   const now = Date.now();
+  const canReuseSnapshot =
+    session.latestSnapshot &&
+    now - session.lastFetchedAt < SNAPSHOT_TTL_MS &&
+    session.lastExperimentalSignalsEnabled === enhancedDetectionSignals;
 
-  if (session.latestSnapshot && now - session.lastFetchedAt < SNAPSHOT_TTL_MS) {
-    const snapshot = applyLiveViewerCountOverride(session, context.viewerCount) ?? session.latestSnapshot;
+  if (canReuseSnapshot) {
+    const snapshot = applyLiveViewerCountOverride(session, context.viewerCount, enhancedDetectionSignals) ?? session.latestSnapshot!;
     await storeContext(resolveDashboardContext(context, session, snapshot));
     return { snapshot, recentChannels: getActiveChannels() };
   }
 
   if (session.refreshPromise) {
     const snapshot = await session.refreshPromise;
-    const resolvedSnapshot = applyLiveViewerCountOverride(session, context.viewerCount) ?? snapshot;
+    const resolvedSnapshot = applyLiveViewerCountOverride(session, context.viewerCount, enhancedDetectionSignals) ?? snapshot;
     await storeContext(resolveDashboardContext(context, session, resolvedSnapshot));
     return { snapshot: resolvedSnapshot, recentChannels: getActiveChannels() };
   }
@@ -749,7 +1048,7 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
     const seenAt = Date.now();
 
     if (liveViewerCount <= 0) {
-      const analyzed = analyzeViewers(session.viewers, false);
+      const analyzed = analyzeViewers(session, false, enhancedDetectionSignals);
       upsertTimeline(session, 0, 0, 0);
 
       const snapshot: ChannelSnapshot = {
@@ -777,6 +1076,7 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
       snapshot.timelineResolutionMinutes = timeline.resolutionMinutes;
 
       session.latestSnapshot = snapshot;
+      session.lastExperimentalSignalsEnabled = enhancedDetectionSignals;
       session.lastFetchedAt = Date.now();
       return snapshot;
     }
@@ -785,6 +1085,7 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
       session.viewers.clear();
       session.pendingUsernames.clear();
       session.history = [];
+      session.nextViewerEventId = 1;
       session.latestSnapshot = undefined;
     }
 
@@ -793,11 +1094,20 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
     viewerSample.viewers.forEach((username) => {
       const existing = session.viewers.get(username);
       if (existing) {
+        const gapMinutes = Math.max(0, Math.round((seenAt - existing.lastSeen) / 60000));
+        if (seenAt - existing.lastSeen >= VIEWER_REAPPEAR_EVENT_GAP_MS) {
+          appendViewerEvent(session, existing, {
+            at: seenAt,
+            kind: "sample",
+            title: "Seen again",
+            detail: `The account reappeared after ${formatViewerEventMinutes(gapMinutes)} away from the sampled set.`,
+          });
+        }
         existing.lastSeen = seenAt;
         return;
       }
 
-      session.viewers.set(username, {
+      const nextViewer: SessionViewer = {
         id: username,
         username,
         createdAt: null,
@@ -810,7 +1120,15 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
         accountsOnSameDay: 0,
         score: 0,
         tags: [],
+        events: [],
+      };
+      appendViewerEvent(session, nextViewer, {
+        at: seenAt,
+        kind: "sample",
+        title: "First seen",
+        detail: "Added to the sampled viewer set for this channel session.",
       });
+      session.viewers.set(username, nextViewer);
       session.pendingUsernames.add(username);
     });
 
@@ -830,7 +1148,7 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
 
     ensureUserInfoDrain(session);
 
-    const analyzed = analyzeViewers(session.viewers, true);
+    const analyzed = analyzeViewers(session, true, enhancedDetectionSignals);
     upsertTimeline(session, liveViewerCount, analyzed.suspiciousCount, viewerSample.totalAuthenticatedCount);
 
     const snapshot: ChannelSnapshot = {
@@ -849,7 +1167,13 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
       timeline: [],
       timelineSpanMinutes: 0,
       timelineResolutionMinutes: 1,
-      remarks: buildChannelRemarks(analyzed.viewers, liveViewerCount, getTrackedHistoryMinutes(session.history)),
+      remarks: buildChannelRemarks(
+        analyzed.viewers,
+        liveViewerCount,
+        getTrackedHistoryMinutes(session.history),
+        viewerSample.totalAuthenticatedCount,
+        enhancedDetectionSignals,
+      ),
     };
 
     const timeline = mapTimeline(session.history);
@@ -858,8 +1182,9 @@ async function refreshChannelSnapshot(context: DashboardContext): Promise<{ snap
     snapshot.timelineResolutionMinutes = timeline.resolutionMinutes;
 
     session.latestSnapshot = snapshot;
+    session.lastExperimentalSignalsEnabled = enhancedDetectionSignals;
     session.lastFetchedAt = Date.now();
-    return applyLiveViewerCountOverride(session, context.viewerCount) ?? snapshot;
+    return applyLiveViewerCountOverride(session, context.viewerCount, enhancedDetectionSignals) ?? snapshot;
   })();
 
   try {

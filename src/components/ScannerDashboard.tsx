@@ -35,26 +35,78 @@ import {
   tagBreakdown,
   type Channel,
   type ChannelSnapshot,
+  type ScoreTag,
   type Viewer,
+  type ViewerEvent,
   watchTimeStats,
 } from "@/shared/analytics";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 type Filter = "all" | "suspicious" | "watch" | "safe";
+type ScoreBandFilter = Exclude<Filter, "all">;
+type PresenceFilter = "all" | "present" | "not_present";
+type ProfileFilter = "all" | "blank" | "has_bio" | "bio_unknown";
+type AvatarFilter = "all" | "default" | "custom" | "missing";
+type AgeFilter = "all" | "lt30" | "lt90" | "gte90" | "unknown";
+type WatchFilter = "all" | "lt5" | "gte5" | "gte30";
+type SameDayFilter = "all" | "gte5" | "gte10";
+type TagMode = "any" | "all";
+
+type ViewerFilters = {
+  bands: ScoreBandFilter[];
+  presence: PresenceFilter;
+  profile: ProfileFilter;
+  avatar: AvatarFilter;
+  age: AgeFilter;
+  watch: WatchFilter;
+  sameDay: SameDayFilter;
+  tagMode: TagMode;
+  selectedTags: ScoreTag[];
+  scoreMin: string;
+  scoreMax: string;
+};
 
 const BAND_COPY: Record<Filter, string> = {
   all: "All",
   suspicious: "High signal",
   watch: "Needs review",
   safe: "Low signal",
+};
+
+const SCORE_BAND_OPTIONS: ScoreBandFilter[] = ["suspicious", "watch", "safe"];
+const TAG_FILTER_OPTIONS: ScoreTag[] = [
+  "new_account",
+  "clustered_creation",
+  "same_day_cluster",
+  "repeated_bio",
+  "no_description",
+  "default_avatar",
+  "missing_created_at",
+  "short_watch",
+];
+
+const DEFAULT_VIEWER_FILTERS: ViewerFilters = {
+  bands: [...SCORE_BAND_OPTIONS],
+  presence: "all",
+  profile: "all",
+  avatar: "all",
+  age: "all",
+  watch: "all",
+  sameDay: "all",
+  tagMode: "any",
+  selectedTags: [],
+  scoreMin: "",
+  scoreMax: "",
 };
 
 const COLORS = {
@@ -150,6 +202,49 @@ function StatusPill({ label, tone }: { label: string; tone: "risk" | "trust" | "
   return <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${cls}`}>{label}</span>;
 }
 
+function ViewerEventRow({ event }: { event: ViewerEvent }) {
+  const toneClass =
+    event.kind === "score"
+      ? "border-[color:var(--color-warning)]/30 bg-[color:var(--color-warning)]/10 text-[color:var(--color-warning)]"
+      : event.kind === "profile"
+        ? "border-[color:var(--color-accent)]/30 bg-[color:var(--color-accent)]/10 text-[color:var(--color-accent)]"
+        : "border-border bg-background/40 text-muted-foreground";
+  const delta =
+    typeof event.scoreBefore === "number" && typeof event.scoreAfter === "number"
+      ? event.scoreAfter - event.scoreBefore
+      : null;
+
+  return (
+    <div className="rounded border border-border bg-background/40 px-3 py-2">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${toneClass}`}>
+              {event.kind}
+            </span>
+            <span className="text-xs font-medium text-foreground">{event.title}</span>
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground">
+            {formatClockTime(event.at)} · {formatDistanceToNowStrict(new Date(event.at), { addSuffix: true })}
+          </div>
+        </div>
+        {typeof event.scoreAfter === "number" ? (
+          <div className="text-right">
+            <div className="font-mono text-xs text-foreground">{event.scoreAfter}</div>
+            {delta !== null ? (
+              <div className={`text-[10px] ${delta >= 0 ? "text-[color:var(--color-warning)]" : "text-[color:var(--color-success)]"}`}>
+                {delta >= 0 ? "+" : ""}
+                {delta}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      {event.detail ? <p className="mt-2 text-xs text-muted-foreground">{event.detail}</p> : null}
+    </div>
+  );
+}
+
 function getBandSummary(viewer: Viewer): string {
   const band = scoreBand(viewer.score);
   if (band === "suspicious") {
@@ -169,6 +264,134 @@ function ChannelAvatar({ channel, size }: { channel: Channel; size: string }) {
   }
 
   return <span className={`${size} rounded-full ring-1 ring-border`} style={{ background: channel.avatarColor }} />;
+}
+
+function getViewerAgeDays(viewer: Viewer): number | null {
+  if (!viewer.createdAt) {
+    return null;
+  }
+
+  const createdAt = new Date(viewer.createdAt);
+  if (Number.isNaN(createdAt.getTime())) {
+    return null;
+  }
+
+  return Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / 86400000));
+}
+
+function hasViewerBio(description: string | null): boolean {
+  return typeof description === "string" && description.trim().length > 0;
+}
+
+function getViewerEvents(viewer: Viewer): ViewerEvent[] {
+  return viewer.events ?? [];
+}
+
+function matchesViewerFilters(viewer: Viewer, filters: ViewerFilters): boolean {
+  const band = scoreBand(viewer.score) as ScoreBandFilter;
+  if (!filters.bands.includes(band)) {
+    return false;
+  }
+
+  if (filters.presence === "present" && !viewer.present) {
+    return false;
+  }
+  if (filters.presence === "not_present" && viewer.present) {
+    return false;
+  }
+
+  const hasBio = viewer.userInfoStatus === "resolved" && hasViewerBio(viewer.description);
+  const hasBlankBio = viewer.userInfoStatus === "resolved" && !hasViewerBio(viewer.description);
+  const bioUnknown = viewer.userInfoStatus !== "resolved";
+  if (filters.profile === "has_bio" && !hasBio) {
+    return false;
+  }
+  if (filters.profile === "blank" && !hasBlankBio) {
+    return false;
+  }
+  if (filters.profile === "bio_unknown" && !bioUnknown) {
+    return false;
+  }
+
+  const hasDefaultAvatar = viewer.tags.includes("default_avatar");
+  const hasAvatar = Boolean(viewer.profileImageURL);
+  if (filters.avatar === "default" && !hasDefaultAvatar) {
+    return false;
+  }
+  if (filters.avatar === "custom" && (!hasAvatar || hasDefaultAvatar)) {
+    return false;
+  }
+  if (filters.avatar === "missing" && hasAvatar) {
+    return false;
+  }
+
+  const ageDays = getViewerAgeDays(viewer);
+  if (filters.age === "lt30" && !(ageDays !== null && ageDays < 30)) {
+    return false;
+  }
+  if (filters.age === "lt90" && !(ageDays !== null && ageDays < 90)) {
+    return false;
+  }
+  if (filters.age === "gte90" && !(ageDays !== null && ageDays >= 90)) {
+    return false;
+  }
+  if (filters.age === "unknown" && ageDays !== null) {
+    return false;
+  }
+
+  if (filters.watch === "lt5" && viewer.watchTimeMinutes >= 5) {
+    return false;
+  }
+  if (filters.watch === "gte5" && viewer.watchTimeMinutes < 5) {
+    return false;
+  }
+  if (filters.watch === "gte30" && viewer.watchTimeMinutes < 30) {
+    return false;
+  }
+
+  if (filters.sameDay === "gte5" && viewer.accountsOnSameDay < 5) {
+    return false;
+  }
+  if (filters.sameDay === "gte10" && viewer.accountsOnSameDay < 10) {
+    return false;
+  }
+
+  const minScore = filters.scoreMin.trim() ? Number(filters.scoreMin) : null;
+  const maxScore = filters.scoreMax.trim() ? Number(filters.scoreMax) : null;
+  if (minScore !== null && Number.isFinite(minScore) && viewer.score < minScore) {
+    return false;
+  }
+  if (maxScore !== null && Number.isFinite(maxScore) && viewer.score > maxScore) {
+    return false;
+  }
+
+  if (filters.selectedTags.length) {
+    const matchesTagSelection =
+      filters.tagMode === "all"
+        ? filters.selectedTags.every((tag) => viewer.tags.includes(tag))
+        : filters.selectedTags.some((tag) => viewer.tags.includes(tag));
+
+    if (!matchesTagSelection) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function countActiveViewerFilters(filters: ViewerFilters): number {
+  let count = 0;
+  if (filters.bands.length !== DEFAULT_VIEWER_FILTERS.bands.length) count += 1;
+  if (filters.presence !== DEFAULT_VIEWER_FILTERS.presence) count += 1;
+  if (filters.profile !== DEFAULT_VIEWER_FILTERS.profile) count += 1;
+  if (filters.avatar !== DEFAULT_VIEWER_FILTERS.avatar) count += 1;
+  if (filters.age !== DEFAULT_VIEWER_FILTERS.age) count += 1;
+  if (filters.watch !== DEFAULT_VIEWER_FILTERS.watch) count += 1;
+  if (filters.sameDay !== DEFAULT_VIEWER_FILTERS.sameDay) count += 1;
+  if (filters.selectedTags.length) count += 1;
+  if (filters.scoreMin.trim()) count += 1;
+  if (filters.scoreMax.trim()) count += 1;
+  return count;
 }
 
 function ChartFrame({
@@ -212,11 +435,15 @@ export function ScannerDashboard({
   initialChannelName,
   channels,
   analytics,
+  experimentalEnabled = false,
+  onExperimentalChange,
   onChannelChange,
 }: {
   initialChannelName?: string;
   channels?: Channel[];
   analytics?: ChannelSnapshot | null;
+  experimentalEnabled?: boolean;
+  onExperimentalChange?: (enabled: boolean) => void;
   onChannelChange?: (channel: Channel) => void;
 }) {
   const resolvedInitialChannel = useMemo(() => buildChannel(initialChannelName || "twitch", "Live channel"), [initialChannelName]);
@@ -230,8 +457,8 @@ export function ScannerDashboard({
   }, [channels, resolvedInitialChannel]);
 
   const [selectedChannelName, setSelectedChannelName] = useState(availableChannels[0]?.name ?? resolvedInitialChannel.name);
-  const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
+  const [viewerFilters, setViewerFilters] = useState<ViewerFilters>(DEFAULT_VIEWER_FILTERS);
   const [selected, setSelected] = useState<Viewer | null>(null);
   const [showGuide, setShowGuide] = useState(false);
   const [breakdownViewer, setBreakdownViewer] = useState<Viewer | null>(null);
@@ -272,15 +499,63 @@ export function ScannerDashboard({
     };
   }, [activeAnalytics]);
 
+  const liveCoverageLabel = useMemo(() => {
+    if (!experimentalEnabled) {
+      return `${totals.authenticated.toLocaleString()} authenticated`;
+    }
+
+    if (!totals.live) {
+      return `${totals.authenticated.toLocaleString()} authenticated`;
+    }
+
+    const coverage = (totals.authenticated / Math.max(totals.live, 1)) * 100;
+    return `${totals.authenticated.toLocaleString()} authenticated · ${coverage.toFixed(1)}% visible`;
+  }, [experimentalEnabled, totals.authenticated, totals.live]);
+
+  const activeFilterCount = useMemo(() => countActiveViewerFilters(viewerFilters), [viewerFilters]);
+  const activeFilterLabels = useMemo(() => {
+    const labels: string[] = [];
+    if (viewerFilters.bands.length !== SCORE_BAND_OPTIONS.length) {
+      labels.push(viewerFilters.bands.map((band) => BAND_COPY[band]).join(" + "));
+    }
+    if (viewerFilters.presence === "present") labels.push("Seen now");
+    if (viewerFilters.presence === "not_present") labels.push("Sampled earlier");
+    if (viewerFilters.profile === "blank") labels.push("No bio");
+    if (viewerFilters.profile === "has_bio") labels.push("Has bio");
+    if (viewerFilters.profile === "bio_unknown") labels.push("Bio unknown");
+    if (viewerFilters.avatar === "default") labels.push("Default avatar");
+    if (viewerFilters.avatar === "custom") labels.push("Custom avatar");
+    if (viewerFilters.avatar === "missing") labels.push("No avatar");
+    if (viewerFilters.age === "lt30") labels.push("Age <30d");
+    if (viewerFilters.age === "lt90") labels.push("Age <90d");
+    if (viewerFilters.age === "gte90") labels.push("Age 90d+");
+    if (viewerFilters.age === "unknown") labels.push("Age unknown");
+    if (viewerFilters.watch === "lt5") labels.push("Watch <5m");
+    if (viewerFilters.watch === "gte5") labels.push("Watch 5m+");
+    if (viewerFilters.watch === "gte30") labels.push("Watch 30m+");
+    if (viewerFilters.sameDay === "gte5") labels.push("Day cluster 5+");
+    if (viewerFilters.sameDay === "gte10") labels.push("Day cluster 10+");
+    if (viewerFilters.selectedTags.length) {
+      labels.push(
+        `${viewerFilters.tagMode === "all" ? "All" : "Any"} tags: ${viewerFilters.selectedTags
+          .map((tag) => TAG_LABELS[tag].label)
+          .join(", ")}`,
+      );
+    }
+    if (viewerFilters.scoreMin.trim()) labels.push(`Score >= ${viewerFilters.scoreMin.trim()}`);
+    if (viewerFilters.scoreMax.trim()) labels.push(`Score <= ${viewerFilters.scoreMax.trim()}`);
+    return labels;
+  }, [viewerFilters]);
+
   const filtered = useMemo(() => {
     let list = viewers;
-    if (filter !== "all") list = list.filter((viewer) => scoreBand(viewer.score) === filter);
     if (query.trim()) {
       const lower = query.toLowerCase();
-      list = list.filter((viewer) => viewer.username.toLowerCase().includes(lower));
+      list = list.filter((viewer) => viewer.username.toLowerCase().includes(lower) || viewer.displayName.toLowerCase().includes(lower));
     }
+    list = list.filter((viewer) => matchesViewerFilters(viewer, viewerFilters));
     return list;
-  }, [filter, query, viewers]);
+  }, [query, viewerFilters, viewers]);
 
   useEffect(() => {
     setSelected((current) => current && viewers.some((viewer) => viewer.id === current.id) ? current : viewers[0] ?? null);
@@ -352,17 +627,39 @@ export function ScannerDashboard({
                 type="button"
                 aria-label="How scanning works"
                 onClick={() => setShowGuide(true)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card/60 text-muted-foreground transition-colors hover:border-accent/50 hover:bg-secondary/80 hover:text-foreground"
+                className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-border bg-card/60 text-muted-foreground transition-colors hover:border-accent/50 hover:bg-secondary/80 hover:text-foreground"
               >
                 <CircleHelp className="h-4 w-4" />
               </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger className="group flex cursor-pointer items-center gap-2 rounded-md border border-border bg-card/60 px-3 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:border-accent/50 hover:bg-secondary/80 hover:text-foreground">
+                  Experimental
+                  <ChevronDown className="h-4 w-4 transition group-data-[state=open]:rotate-180" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-72">
+                  <DropdownMenuLabel className="text-xs uppercase tracking-wider text-muted-foreground">
+                    Experimental signals
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuCheckboxItem
+                    checked={experimentalEnabled}
+                    onCheckedChange={(checked) => onExperimentalChange?.(checked === true)}
+                    className="cursor-pointer"
+                  >
+                    Enhanced detection logic
+                  </DropdownMenuCheckboxItem>
+                  <div className="px-8 py-2 text-xs text-muted-foreground">
+                    Persists across sessions and enables newer sample-based scoring and live/authenticated mismatch warnings.
+                  </div>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
         </header>
 
         <main className="mx-auto max-w-[1600px] space-y-4 px-6 py-6">
           <section className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
-            <StatCard label="Live viewers" value={totals.live.toLocaleString()} icon={Eye} delta={`${totals.authenticated.toLocaleString()} authenticated`} />
+            <StatCard label="Live viewers" value={totals.live.toLocaleString()} icon={Eye} delta={liveCoverageLabel} />
             <StatCard label="Sampled" value={totals.sample} icon={Users} delta="community tab total sampling" />
             <StatCard label="High signal" value={totals.suspicious} icon={AlertTriangle} tone="danger" delta={totals.sample ? `${((totals.suspicious / totals.sample) * 100).toFixed(1)}% of sample` : "0% of sample"} />
             <StatCard label="Needs review" value={totals.watch} icon={Activity} tone="warning" delta="stacked weak signals" />
@@ -663,20 +960,229 @@ export function ScannerDashboard({
                     className="w-56 rounded-md border border-border bg-background/60 py-1.5 pl-7 pr-2 text-xs outline-none focus:border-accent"
                   />
                 </div>
-                <div className="flex items-center gap-1 rounded-md border border-border bg-background/40 p-0.5 text-xs">
-                  <Filter className="ml-1 h-3 w-3 text-muted-foreground" />
-                  {(["all", "suspicious", "watch", "safe"] as Filter[]).map((item) => (
+                <Popover>
+                  <PopoverTrigger asChild>
                     <button
-                      key={item}
-                      onClick={() => setFilter(item)}
-                      className={`rounded px-2 py-1 capitalize transition ${filter === item ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                      type="button"
+                      aria-label="Open advanced viewer filters"
+                      className={`inline-flex h-8 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs transition-colors ${
+                        activeFilterCount
+                          ? "border-accent/50 bg-accent/10 text-foreground"
+                          : "border-border bg-background/40 text-muted-foreground hover:border-accent/50 hover:bg-secondary/80 hover:text-foreground"
+                      }`}
                     >
-                      {BAND_COPY[item]}
+                      <Filter className="h-3.5 w-3.5" />
+                      Filters
+                      {activeFilterCount ? <span className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[10px]">{activeFilterCount}</span> : null}
                     </button>
-                  ))}
-                </div>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-[420px] p-0">
+                    <div className="border-b border-border px-4 py-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold">Advanced viewer filters</div>
+                          <div className="text-xs text-muted-foreground">Stack multiple conditions to isolate clusters and suspicious sample patterns.</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setViewerFilters(DEFAULT_VIEWER_FILTERS)}
+                          className="cursor-pointer rounded-md border border-border px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground transition-colors hover:bg-secondary/80 hover:text-foreground"
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid gap-4 px-4 py-4">
+                      <div>
+                        <div className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">Score bands</div>
+                        <div className="flex flex-wrap gap-2">
+                          {SCORE_BAND_OPTIONS.map((band) => {
+                            const active = viewerFilters.bands.includes(band);
+                            return (
+                               <button
+                                 key={band}
+                                 type="button"
+                                onClick={() =>
+                                  setViewerFilters((current) => {
+                                    const nextBands = current.bands.includes(band)
+                                      ? current.bands.length === 1
+                                        ? current.bands
+                                        : current.bands.filter((item) => item !== band)
+                                      : [...current.bands, band];
+                                    return { ...current, bands: nextBands };
+                                  })
+                                }
+                                 className={`cursor-pointer rounded-md border px-2 py-1 text-xs transition-colors ${
+                                   active ? "border-accent/50 bg-accent/10 text-foreground" : "border-border bg-background/40 text-muted-foreground hover:text-foreground"
+                                 }`}
+                               >
+                                {BAND_COPY[band]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="space-y-1 text-xs">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Presence</span>
+                          <select
+                            value={viewerFilters.presence}
+                            onChange={(event) => setViewerFilters((current) => ({ ...current, presence: event.target.value as PresenceFilter }))}
+                            className="w-full cursor-pointer rounded-md border border-border bg-background/60 px-2 py-1.5 text-xs outline-none focus:border-accent"
+                          >
+                            <option value="all">All viewers</option>
+                            <option value="present">Seen now</option>
+                            <option value="not_present">Sampled earlier</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1 text-xs">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Profile</span>
+                          <select
+                            value={viewerFilters.profile}
+                            onChange={(event) => setViewerFilters((current) => ({ ...current, profile: event.target.value as ProfileFilter }))}
+                            className="w-full cursor-pointer rounded-md border border-border bg-background/60 px-2 py-1.5 text-xs outline-none focus:border-accent"
+                          >
+                            <option value="all">Any bio state</option>
+                            <option value="blank">No bio</option>
+                            <option value="has_bio">Has bio</option>
+                            <option value="bio_unknown">Bio unknown</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1 text-xs">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Avatar</span>
+                          <select
+                            value={viewerFilters.avatar}
+                            onChange={(event) => setViewerFilters((current) => ({ ...current, avatar: event.target.value as AvatarFilter }))}
+                            className="w-full cursor-pointer rounded-md border border-border bg-background/60 px-2 py-1.5 text-xs outline-none focus:border-accent"
+                          >
+                            <option value="all">Any avatar state</option>
+                            <option value="default">Default avatar</option>
+                            <option value="custom">Custom avatar</option>
+                            <option value="missing">No avatar loaded</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1 text-xs">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Account age</span>
+                          <select
+                            value={viewerFilters.age}
+                            onChange={(event) => setViewerFilters((current) => ({ ...current, age: event.target.value as AgeFilter }))}
+                            className="w-full cursor-pointer rounded-md border border-border bg-background/60 px-2 py-1.5 text-xs outline-none focus:border-accent"
+                          >
+                            <option value="all">Any age</option>
+                            <option value="lt30">&lt; 30 days</option>
+                            <option value="lt90">&lt; 90 days</option>
+                            <option value="gte90">90+ days</option>
+                            <option value="unknown">Unknown age</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1 text-xs">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Watch time</span>
+                          <select
+                            value={viewerFilters.watch}
+                            onChange={(event) => setViewerFilters((current) => ({ ...current, watch: event.target.value as WatchFilter }))}
+                            className="w-full cursor-pointer rounded-md border border-border bg-background/60 px-2 py-1.5 text-xs outline-none focus:border-accent"
+                          >
+                            <option value="all">Any duration</option>
+                            <option value="lt5">&lt; 5 minutes</option>
+                            <option value="gte5">5+ minutes</option>
+                            <option value="gte30">30+ minutes</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1 text-xs">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Same-day cluster</span>
+                          <select
+                            value={viewerFilters.sameDay}
+                            onChange={(event) => setViewerFilters((current) => ({ ...current, sameDay: event.target.value as SameDayFilter }))}
+                            className="w-full cursor-pointer rounded-md border border-border bg-background/60 px-2 py-1.5 text-xs outline-none focus:border-accent"
+                          >
+                            <option value="all">Any day count</option>
+                            <option value="gte5">5+ same day</option>
+                            <option value="gte10">10+ same day</option>
+                          </select>
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="space-y-1 text-xs">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Min score</span>
+                          <input
+                            value={viewerFilters.scoreMin}
+                            inputMode="numeric"
+                            onChange={(event) => setViewerFilters((current) => ({ ...current, scoreMin: event.target.value.replace(/[^\d]/g, "") }))}
+                            placeholder="0"
+                            className="w-full rounded-md border border-border bg-background/60 px-2 py-1.5 text-xs outline-none focus:border-accent"
+                          />
+                        </label>
+                        <label className="space-y-1 text-xs">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Max score</span>
+                          <input
+                            value={viewerFilters.scoreMax}
+                            inputMode="numeric"
+                            onChange={(event) => setViewerFilters((current) => ({ ...current, scoreMax: event.target.value.replace(/[^\d]/g, "") }))}
+                            placeholder="100"
+                            className="w-full rounded-md border border-border bg-background/60 px-2 py-1.5 text-xs outline-none focus:border-accent"
+                          />
+                        </label>
+                      </div>
+
+                      <div>
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Signal tags</span>
+                          <div className="flex items-center gap-1 rounded-md border border-border bg-background/40 p-0.5 text-[10px]">
+                            {(["any", "all"] as TagMode[]).map((mode) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => setViewerFilters((current) => ({ ...current, tagMode: mode }))}
+                                className={`cursor-pointer rounded px-2 py-1 uppercase tracking-wider transition ${
+                                  viewerFilters.tagMode === mode ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"
+                                }`}
+                              >
+                                {mode}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {TAG_FILTER_OPTIONS.map((tag) => {
+                            const active = viewerFilters.selectedTags.includes(tag);
+                            return (
+                              <button
+                                key={tag}
+                                type="button"
+                                onClick={() =>
+                                  setViewerFilters((current) => ({
+                                    ...current,
+                                    selectedTags: current.selectedTags.includes(tag)
+                                      ? current.selectedTags.filter((item) => item !== tag)
+                                      : [...current.selectedTags, tag],
+                                  }))
+                                }
+                                className={`cursor-pointer rounded-md border px-2 py-1 text-xs transition-colors ${
+                                  active ? "border-accent/50 bg-accent/10 text-foreground" : "border-border bg-background/40 text-muted-foreground hover:text-foreground"
+                                }`}
+                              >
+                                {TAG_LABELS[tag].label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </div>
             </div>
+            {activeFilterLabels.length ? (
+              <div className="flex flex-wrap gap-2 border-t border-border/60 px-4 py-3">
+                {activeFilterLabels.map((label) => (
+                  <span key={label} className="inline-flex items-center rounded-md border border-accent/30 bg-accent/10 px-2 py-1 text-[10px] uppercase tracking-wide text-foreground">
+                    {label}
+                  </span>
+                ))}
+              </div>
+            ) : null}
 
             <div className="max-h-[560px] overflow-auto">
               <table className="w-full text-sm">
@@ -736,8 +1242,8 @@ export function ScannerDashboard({
                         <td className="px-4 py-2">
                           <div className="flex max-w-[340px] flex-wrap gap-1">
                             <StatusPill
-                              label={viewer.userInfoStatus === "resolved" ? (viewer.description ? "Has bio" : "No bio") : "Bio unknown"}
-                              tone={viewer.userInfoStatus === "resolved" ? (viewer.description ? "trust" : "risk") : "neutral"}
+                              label={viewer.userInfoStatus === "resolved" ? (hasViewerBio(viewer.description) ? "Has bio" : "No bio") : "Bio unknown"}
+                              tone={viewer.userInfoStatus === "resolved" ? (hasViewerBio(viewer.description) ? "trust" : "risk") : "neutral"}
                             />
                             {viewer.tags.includes("default_avatar") ? <StatusPill label="Default avatar" tone="risk" /> : null}
                             <StatusPill label={viewer.watchTimeMinutes >= 5 ? "Watching" : "Short watch"} tone={viewer.watchTimeMinutes >= 5 ? "trust" : "risk"} />
@@ -761,7 +1267,7 @@ export function ScannerDashboard({
                               setBreakdownViewer(viewer);
                               setSelected(viewer);
                             }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background/40 text-muted-foreground transition-colors hover:border-accent/50 hover:bg-secondary/80 hover:text-foreground"
+                            className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-border bg-background/40 text-muted-foreground transition-colors hover:border-accent/50 hover:bg-secondary/80 hover:text-foreground"
                           >
                             <MoreHorizontal className="h-4 w-4" />
                           </button>
@@ -819,19 +1325,19 @@ export function ScannerDashboard({
                 <div className="rounded-lg border border-border bg-background/40 p-4">
                   <h3 className="text-sm font-semibold">Scoring</h3>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Scores are based on account age, creation-date clustering, same-day account density, missing bio, default avatar, short watch duration, and how those weak signals stack together. Higher scores mean more review signals, not certainty.
+                    Scores are based on account age, creation-date clustering, same-day account density, repeated bios, missing bio, default avatar, short watch duration, and how those weak signals stack together. Higher scores mean more review signals, not certainty.
                   </p>
                 </div>
                 <div className="rounded-lg border border-border bg-background/40 p-4">
                   <h3 className="text-sm font-semibold">Labels</h3>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Labels summarize the strongest signals we currently have, such as <span className="text-foreground">New account</span>, <span className="text-foreground">Day cluster</span>, <span className="text-foreground">No bio</span>, <span className="text-foreground">Default avatar</span>, and <span className="text-foreground">Short watch</span>.
+                    Labels summarize the strongest signals we currently have, such as <span className="text-foreground">New account</span>, <span className="text-foreground">Day cluster</span>, <span className="text-foreground">Repeated bio</span>, <span className="text-foreground">No bio</span>, <span className="text-foreground">Default avatar</span>, and <span className="text-foreground">Short watch</span>.
                   </p>
                 </div>
                 <div className="rounded-lg border border-border bg-background/40 p-4">
                   <h3 className="text-sm font-semibold">Watch-time and live data</h3>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Watch-time only grows when we keep seeing an account in later samples. Live viewers come from Twitch&apos;s live count, while sampled risk totals come from the session-wide sampled set and may lag or overstate current presence.
+                    Watch-time only grows when we keep seeing an account in later samples. That means Sentio is usually rougher on the first sweep, then becomes more accurate after a few minutes as it circles back, confirms who is still watching, and lets the score bands stabilize. Live viewers come from Twitch&apos;s live count, while sampled risk totals come from the session-wide sampled set and may lag or overstate current presence.
                   </p>
                 </div>
               </div>
@@ -844,7 +1350,11 @@ export function ScannerDashboard({
         ) : null}
         {breakdownViewer ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-6 backdrop-blur-sm" onClick={() => setBreakdownViewer(null)}>
-            <div className="w-full max-w-2xl rounded-xl border border-border bg-card p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="w-full max-w-5xl rounded-xl border border-border bg-card p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+              {(() => {
+                const breakdownViewerEvents = getViewerEvents(breakdownViewer);
+                return (
+                  <>
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2">
@@ -878,31 +1388,57 @@ export function ScannerDashboard({
                 ))}
               </div>
 
-              <div className="mt-5 rounded-lg border border-border bg-background/40 p-4">
-                <div className="text-sm font-semibold">Score breakdown</div>
-                <p className="mt-1 text-xs text-muted-foreground">These are weak surface-level signals that stack together. They are meant to guide review, not prove intent.</p>
-                {breakdownViewer.scoreBreakdown.length ? (
-                  <div className="mt-4 space-y-2">
-                    {breakdownViewer.scoreBreakdown.map((item) => (
-                      <div key={item.id} className="rounded-md border border-border/70 bg-card/60 px-3 py-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-sm font-medium text-foreground">{item.label}</div>
-                          <div className="font-mono text-sm text-[color:var(--color-warning)]">+{item.points}</div>
+              <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.9fr)]">
+                <div className="rounded-lg border border-border bg-background/40 p-4">
+                  <div className="text-sm font-semibold">Score breakdown</div>
+                  <p className="mt-1 text-xs text-muted-foreground">These are weak surface-level signals that stack together. They are meant to guide review, not prove intent.</p>
+                  {breakdownViewer.scoreBreakdown.length ? (
+                    <div className="mt-4 space-y-2">
+                      {breakdownViewer.scoreBreakdown.map((item) => (
+                        <div key={item.id} className="rounded-md border border-border/70 bg-card/60 px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-medium text-foreground">{item.label}</div>
+                            <div className="font-mono text-sm text-[color:var(--color-warning)]">+{item.points}</div>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-md border border-border/70 bg-card/60 px-3 py-2 text-sm text-muted-foreground">
+                      No strong surface-level signals have stacked up yet. Low signal does not confirm legitimacy.
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-border bg-background/40 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold">History</div>
+                      <p className="mt-1 text-xs text-muted-foreground">Current-session viewer events that explain how this account changed over time.</p>
+                    </div>
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{breakdownViewerEvents.length} events</div>
                   </div>
-                ) : (
-                  <div className="mt-4 rounded-md border border-border/70 bg-card/60 px-3 py-2 text-sm text-muted-foreground">
-                    No strong surface-level signals have stacked up yet. Low signal does not confirm legitimacy.
-                  </div>
-                )}
+                  {breakdownViewerEvents.length ? (
+                    <div className="mt-4 max-h-[560px] space-y-2 overflow-y-auto pr-1">
+                      {breakdownViewerEvents.map((event) => (
+                        <ViewerEventRow key={event.id} event={event} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-md border border-border/70 bg-card/60 px-3 py-3 text-sm text-muted-foreground">
+                      No viewer history yet for this session.
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="mt-4 rounded-lg border border-[color:var(--color-warning)]/30 bg-[color:var(--color-warning)]/10 p-4 text-sm text-muted-foreground">
                 <span className="font-semibold text-foreground">Important:</span> this score uses surface-level account signals and sampled context. It is helpful for investigation, not proof.
               </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
         ) : null}

@@ -182,6 +182,15 @@ function readViewerCount(): string {
   return "LIVE";
 }
 
+function hasLivePageSignals(): boolean {
+  if (parseViewerCount(findViewerCountElement()?.textContent, false)) {
+    return true;
+  }
+
+  const roots = [document.querySelector("#live-channel-stream-information"), document.querySelector(".channel-info-content")];
+  return roots.some((rootElement) => Boolean(parseViewerCount(rootElement?.textContent)));
+}
+
 function ensureRoot(mountPoint: MountPoint): void {
   if (!rootNode) {
     rootNode = document.createElement("div");
@@ -336,18 +345,22 @@ async function syncEligiblePageWork() {
   liveStatusCheckInFlight = true;
   try {
     const liveStatus = await requestChannelLiveStatus(channelName);
+    const liveFromPage = hasLivePageSignals();
     lastLiveStatusChannel = channelName;
     lastLiveStatusAt = Date.now();
-    lastKnownStreamLive = liveStatus.streamLive;
+    lastKnownStreamLive = liveStatus.streamLive || liveFromPage;
 
-    if (liveStatus.streamLive) {
+    if (lastKnownStreamLive) {
       startEligiblePageWork();
       return;
     }
 
     stopEligiblePageWork();
   } catch {
-    // Keep the current page state if the lightweight live check fails.
+    if (hasLivePageSignals()) {
+      lastKnownStreamLive = true;
+      startEligiblePageWork();
+    }
   } finally {
     liveStatusCheckInFlight = false;
   }

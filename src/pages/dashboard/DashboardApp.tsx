@@ -2,20 +2,22 @@ import { useEffect, useMemo, useState } from "react";
 import { ScannerDashboard } from "@/components/ScannerDashboard";
 import type { Channel, ChannelSnapshot } from "@/shared/analytics";
 import { requestChannelAnalytics } from "@/shared/analyticsClient";
-import { DASHBOARD_STORAGE_KEY, type DashboardContext } from "@/shared/extension";
+import { DASHBOARD_STORAGE_KEY, EXPERIMENTAL_SETTINGS_STORAGE_KEY, type DashboardContext, type ExperimentalSettings } from "@/shared/extension";
 
 type DashboardState = {
   channelName: string;
   viewerCount: string;
   channelGame: string;
+  experimentalEnabled: boolean;
 };
 
 async function loadDashboardState(): Promise<DashboardState> {
   const params = new URLSearchParams(window.location.search);
   let channelName = params.get("channel") || "";
   let viewerCount = params.get("viewers") || "";
-  const stored = await chrome.storage.local.get([DASHBOARD_STORAGE_KEY]);
+  const stored = await chrome.storage.local.get([DASHBOARD_STORAGE_KEY, EXPERIMENTAL_SETTINGS_STORAGE_KEY]);
   const context = stored[DASHBOARD_STORAGE_KEY] as DashboardContext | undefined;
+  const experimental = stored[EXPERIMENTAL_SETTINGS_STORAGE_KEY] as ExperimentalSettings | undefined;
 
   channelName ||= context?.channelName || "";
   viewerCount ||= context?.viewerCount || "";
@@ -24,11 +26,12 @@ async function loadDashboardState(): Promise<DashboardState> {
     channelName,
     viewerCount,
     channelGame: context?.channelGame || "Live channel",
+    experimentalEnabled: experimental?.enhancedDetectionSignals === true,
   };
 }
 
 export function DashboardApp() {
-  const [context, setContext] = useState<DashboardState>({ channelName: "", viewerCount: "", channelGame: "Live channel" });
+  const [context, setContext] = useState<DashboardState>({ channelName: "", viewerCount: "", channelGame: "Live channel", experimentalEnabled: false });
   const [channels, setChannels] = useState<Channel[]>([]);
   const [snapshot, setSnapshot] = useState<ChannelSnapshot | null>(null);
 
@@ -67,7 +70,7 @@ export function DashboardApp() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [context.channelGame, context.channelName, context.viewerCount]);
+  }, [context.channelGame, context.channelName, context.experimentalEnabled, context.viewerCount]);
 
   const availableChannels = useMemo(
     () => (channels.length ? channels : snapshot ? [snapshot.channel] : []),
@@ -79,6 +82,15 @@ export function DashboardApp() {
       initialChannelName={context.channelName}
       channels={availableChannels}
       analytics={snapshot}
+      experimentalEnabled={context.experimentalEnabled}
+      onExperimentalChange={(enabled) => {
+        setContext((current) => ({ ...current, experimentalEnabled: enabled }));
+        void chrome.storage.local.set({
+          [EXPERIMENTAL_SETTINGS_STORAGE_KEY]: {
+            enhancedDetectionSignals: enabled,
+          } satisfies ExperimentalSettings,
+        });
+      }}
       onChannelChange={(channel) =>
         setContext((current) => ({
           ...current,
