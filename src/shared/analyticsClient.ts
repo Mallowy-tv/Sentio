@@ -15,6 +15,11 @@ type LiveStatusResponse = {
   error?: string;
 };
 
+type MutationResponse = {
+  success: boolean;
+  error?: string;
+};
+
 function getRuntime(): typeof chrome.runtime | null {
   const runtime = globalThis.chrome?.runtime;
   return runtime?.id ? runtime : null;
@@ -72,4 +77,20 @@ export async function requestChannelLiveStatus(channelName: string): Promise<{ s
     streamLive: response.streamLive ?? false,
     liveViewerCount: response.liveViewerCount ?? 0,
   };
+}
+
+export async function clearChannelAnalyticsSession(channelName: string): Promise<void> {
+  const runtime = getRuntime();
+  if (!runtime) {
+    throw new Error("Sentio runtime unavailable");
+  }
+
+  const response = (await runtime.sendMessage({
+    type: "CLEAR_CHANNEL_SESSION",
+    payload: { channelName },
+  })) as MutationResponse;
+
+  if (!response.success) {
+    throw new Error(response.error || "Failed to clear channel session");
+  }
 }

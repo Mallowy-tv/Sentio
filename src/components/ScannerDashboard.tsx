@@ -19,6 +19,7 @@ import {
   Filter,
   Info,
   MoreHorizontal,
+  RotateCcw,
   Search,
   ShieldCheck,
   Users,
@@ -101,15 +102,19 @@ export function ScannerDashboard({
   channels,
   analytics,
   experimentalEnabled = false,
+  clearChannelPending = false,
   onExperimentalChange,
   onChannelChange,
+  onClearChannelSession,
 }: {
   initialChannelName?: string;
   channels?: Channel[];
   analytics?: ChannelSnapshot | null;
   experimentalEnabled?: boolean;
+  clearChannelPending?: boolean;
   onExperimentalChange?: (enabled: boolean) => void;
   onChannelChange?: (channel: Channel) => void;
+  onClearChannelSession?: (channel: Channel) => void | Promise<void>;
 }) {
   const resolvedInitialChannel = useMemo(() => buildChannel(initialChannelName || "twitch", "Live channel"), [initialChannelName]);
   const availableChannels = useMemo(() => {
@@ -223,6 +228,21 @@ export function ScannerDashboard({
             </div>
 
             <div className="flex items-center justify-end gap-2">
+              <UITooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Clear channel session"
+                    title="Clear channel session"
+                    disabled={clearChannelPending || !channel.name || !onClearChannelSession}
+                    onClick={() => void onClearChannelSession?.(channel)}
+                    className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-border bg-card/60 text-muted-foreground transition-colors hover:border-accent/50 hover:bg-secondary/80 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Clear this channel&apos;s session data</TooltipContent>
+              </UITooltip>
               <DropdownMenu>
                 <DropdownMenuTrigger className="group flex cursor-pointer items-center gap-3 rounded-md border border-border bg-card/60 px-3 py-1.5 text-sm transition-colors hover:border-accent/50 hover:bg-secondary/80">
                   <ChannelAvatar channel={channel} size="h-6 w-6" />

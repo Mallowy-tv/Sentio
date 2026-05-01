@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ScannerDashboard } from "@/components/ScannerDashboard";
 import type { Channel, ChannelSnapshot } from "@/shared/analytics";
-import { requestChannelAnalytics } from "@/shared/analyticsClient";
+import { clearChannelAnalyticsSession, requestChannelAnalytics } from "@/shared/analyticsClient";
 import { DASHBOARD_STORAGE_KEY, EXPERIMENTAL_SETTINGS_STORAGE_KEY, type DashboardContext, type ExperimentalSettings } from "@/shared/extension";
 
 type DashboardState = {
@@ -34,6 +34,8 @@ export function DashboardApp() {
   const [context, setContext] = useState<DashboardState>({ channelName: "", viewerCount: "", channelGame: "Live channel", experimentalEnabled: false });
   const [channels, setChannels] = useState<Channel[]>([]);
   const [snapshot, setSnapshot] = useState<ChannelSnapshot | null>(null);
+  const [clearChannelPending, setClearChannelPending] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     loadDashboardState().then(setContext);
@@ -70,7 +72,7 @@ export function DashboardApp() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [context.channelGame, context.channelName, context.experimentalEnabled, context.viewerCount]);
+  }, [context.channelGame, context.channelName, context.experimentalEnabled, context.viewerCount, refreshTick]);
 
   const availableChannels = useMemo(
     () => (channels.length ? channels : snapshot ? [snapshot.channel] : []),
@@ -83,6 +85,7 @@ export function DashboardApp() {
       channels={availableChannels}
       analytics={snapshot}
       experimentalEnabled={context.experimentalEnabled}
+      clearChannelPending={clearChannelPending}
       onExperimentalChange={(enabled) => {
         setContext((current) => ({ ...current, experimentalEnabled: enabled }));
         void chrome.storage.local.set({
@@ -99,6 +102,20 @@ export function DashboardApp() {
           viewerCount: "",
         }))
       }
+      onClearChannelSession={async (channel) => {
+        if (!channel.name) {
+          return;
+        }
+
+        setClearChannelPending(true);
+        try {
+          await clearChannelAnalyticsSession(channel.name);
+          setSnapshot((current) => (current?.channel.name === channel.name ? null : current));
+          setRefreshTick((current) => current + 1);
+        } finally {
+          setClearChannelPending(false);
+        }
+      }}
     />
   );
 }

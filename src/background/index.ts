@@ -8,7 +8,7 @@ import {
 import { type DashboardContext } from "../shared/extension";
 import { getUserInfoGraphQL, getViewerCount, getViewerListParallel } from "./twitchApi";
 import { buildDashboardContextFromTab, getExperimentalSettings, getStoredContext, getActiveChannels, isTwitchChannelUrl, openDashboard, resolveDashboardContext, storeContext } from "./dashboard-context";
-import { ensureSession, sessions, type ChannelSession, type SessionViewer } from "./session-types";
+import { clearChannelSession, ensureSession, type ChannelSession, type SessionViewer } from "./session-types";
 import {
   VIEWER_REAPPEAR_EVENT_GAP_MS,
   appendViewerEvent,
@@ -458,6 +458,18 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error: Error) => sendResponse({ success: false, error: error.message }));
     return true;
+  }
+
+  if (payload.type === "CLEAR_CHANNEL_SESSION") {
+    const channelName = payload.payload?.channelName;
+    if (!channelName) {
+      sendResponse({ success: false, error: "Missing channel name" });
+      return false;
+    }
+
+    clearChannelSession(channelName);
+    sendResponse({ success: true });
+    return false;
   }
 
   sendResponse({ success: false, error: "Unknown message type" });

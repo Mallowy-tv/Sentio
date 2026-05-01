@@ -24,6 +24,10 @@ export type ChannelSession = {
 
 export const sessions = new Map<string, ChannelSession>();
 
+export function clearChannelSession(channelName: string): boolean {
+  return sessions.delete(channelName.toLowerCase());
+}
+
 export function getActiveChannels(): Channel[] {
   const cutoff = Date.now() - 45_000;
   return Array.from(sessions.values())
